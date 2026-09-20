@@ -1,0 +1,10 @@
+parameters:
+    level: 5
+    paths:
+        - src
+        - tools/src
+        - test
+    excludePaths:
+        - test/Fixtures/golden
+        - test/Fixtures/schema
+        - vendor

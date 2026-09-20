@@ -1,0 +1,9 @@
+/vendor/
+/build/
+/composer.lock
+*.cache
+
+# Local overrides for the docker/ stack (see docker/.env.example)
+/docker/.env
+
+.claude/worktrees
