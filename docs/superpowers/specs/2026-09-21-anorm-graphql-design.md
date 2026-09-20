@@ -1,7 +1,8 @@
 # anorm-graphql — design
 
 Date: 2026-09-21
-Status: approved design, pre-implementation
+Status: approved design, pre-implementation. Revised 2026-09-21 after the plan's code was
+prototyped and run; each revision is marked *(revised)*.
 
 ## 1. Purpose
 
@@ -98,6 +99,8 @@ saygoweb/anorm-graphql
     TypeMakerOptions.php
     TypeInfo.php
     TypeInfoBuilder.php
+    FileWriter.php
+    Writer/Php.php
     Writer/TypeBaseWriter.php
     Writer/TypeWriter.php
     Writer/InputBaseWriter.php
@@ -107,22 +110,26 @@ saygoweb/anorm-graphql
     Schema/SchemaEditor.php
     Schema/SchemaScaffolder.php
     Schema/FieldsArrayLocator.php
+    Schema/FieldsArray.php
+    Schema/FieldsEntry.php
+    Schema/SchemaEditResult.php
   test/
     tools/          no database
     runtime/        no database
     integration/    database
-    fixtures/
+    Fixtures/       capitalised: its classes are PSR-4 autoloaded (revised)
   docker/
   docs/
 ```
 
 `composer.json`:
 
-- `require`: `php: ^7.4 || ^8.0`, `saygoweb/anorm: ^3.2`, `webonyx/graphql-php`,
-  `simpod/graphql-utils`, `php-di/php-di`, `wp-cli/php-cli-tools`. The graphql,
-  simpod and php-di constraints are set to cover the versions the three existing
-  APIs use (`^14.8`, `^0.5.3`, `^6.0` in saygoweb.com-my); the exact ranges are
-  confirmed during planning against all three `composer.lock` files.
+- `require` *(revised)*: `php: ^7.4 || ^8.0`, `saygoweb/anorm: ^3.2`,
+  `webonyx/graphql-php: ^14.8`, `simpod/graphql-utils: ^0.5.3`, `php-di/php-di: ^6.0`,
+  `wp-cli/php-cli-tools: ^0.11.10`. These are what emdc-events and saygoweb.com-my
+  declare, and both lock to webonyx 14.11.10, simpod 0.5.3 and php-di 6.4.0. inthefish
+  is on webonyx 0.13, simpod 0.3 and anorm 1.5, and is outside the supported range
+  until it is upgraded.
 - `require-dev`: `phpunit/phpunit: ^9.6`, `squizlabs/php_codesniffer`,
   `phpstan/phpstan`.
 - `suggest`: `phpunit/phpunit`, needed by consumers that extend `ModelTypeTestCase`.
@@ -185,9 +192,14 @@ protected function beforeWrite(Model $model, array $input, bool $isUpdate, Conta
 1. `authorize('list', null, $context)`.
 2. Build a Mango array from `$args['query']`, JSON-decoding `selector`. Invalid JSON
    throws a client-safe error naming the argument.
-3. `DataMapper::find($class, $pdo)->byMango(MangoQuery::fromArray(...))->some()`.
+3. *(revised)* **Whitelist every field name.** Each selector key at any depth that is
+   not a `$operator`, and each `sort` field, must be a key of the model's property
+   map; anything else throws a client-safe error. This is a security boundary:
+   Anorm's Mango parser puts a name it does not recognise into the SQL between
+   backticks, unescaped, and these names arrive from the API's clients.
+4. `DataMapper::find($class, $pdo)->byMango(MangoQuery::fromArray(...))->some()`.
    With no `query`, `byMango` is not called.
-4. `Mapper::toArray` each row.
+5. `Mapper::toArray` each row.
 
 **`resolveUpsert`**
 
@@ -199,7 +211,13 @@ For each element of `$args['input']`, in order:
 3. `beforeWrite($model, $input, $isUpdate, $context)`.
 4. `write()`.
 
-Returns the written rows through `Mapper::toArray`.
+Returns the written rows through `Mapper::toArray`. *(revised)* The model is returned
+as written, not read back: Anorm inserts every property, so a column `DEFAULT` never
+applies and a read-back would add a query per row for nothing.
+
+*(revised)* "Not found" is a `GraphQL\Error\UserError`, not the plain `\Exception` of
+`readOrThrow`, because webonyx reports anything else to the client as "Internal
+server error".
 
 **`resolveDelete`**
 
@@ -292,6 +310,11 @@ Read with `Anorm\Schema\PropertyType`, which consults a typed property and then 
 | `bool` | `Boolean` |
 | `string`, anything else, or undeclared | `String` |
 
+*(revised)* A field is a key of the model's mapper map that is also a property of the
+model, excluding: a property registered as a relationship, a property declared
+`array`, and a property whose declared type is an Anorm model (given fully qualified,
+or as a short name in the model's own namespace). The key is always listed first.
+
 Rows are in precedence order: the key rule wins, then the `Id`-suffix rule (case
 sensitive, so `resellerId` but not `paid`), then the declared type. Everything except the
 Type's key is nullable. Properties prefixed `_` are skipped. Dates stay `String`, as
@@ -345,8 +368,9 @@ Option names, short flags and `--option=value` handling mirror `anorm make`. The
    ignored.
 3. Writers emit the files in 5.1.
 4. `SchemaEditor` updates `ApiSchema.php` (section 7).
-5. A summary prints one line per file: `written`, `kept`, `skipped` with reason, or
-   `orphaned`.
+5. A summary prints one line per file *(revised)*: `written`, `current` (a generated
+   file already up to date), `kept`, `forced`, `refused`, `updated` (the schema),
+   `skipped` with reason, or `orphaned`.
 
 Exit codes: 0 on success, 2 on bad arguments or an unknown command, matching `anorm`.
 
@@ -356,12 +380,19 @@ Exit codes: 0 on success, 2 on bad arguments or an unknown command, matching `an
 class NullPdo extends \PDO
 {
     public function __construct() {}
+
+    #[\ReturnTypeWillChange]
+    public function setAttribute($attribute, $value) { return true; }
 }
 ```
 
+*(revised)* `Anorm\Model::__construct` sets the error mode on the PDO it is given, so
+the stub must accept `setAttribute`. It is untyped, with the attribute, so that one
+declaration is valid on PHP 7.4 and 8.x.
+
 Generation needs each model's key property, which lives on the instance
 (`$model->mapper()->modelPrimaryKey`), and `ModelLocator` constructs models with a
-`\PDO`. `DataMapper`'s constructor only stores the PDO and never queries, so a stub
+`\PDO`. `DataMapper`'s constructor only stores the PDO and never queries, so the stub above
 suffices and generation needs no database connection or PDO driver. A model whose
 constructor does query will throw; `ModelLocator` already reports that as a skip.
 
@@ -432,7 +463,9 @@ Rules:
   `MangoInput` and `GraphQL\Type\Definition\Type` are inserted in alphabetical
   position. Imports are never removed.
 - **Removed models.** Owned entries for a model that no longer exists are reported,
-  not deleted, consistent with orphaned files.
+  not deleted, consistent with orphaned files. *(revised)* A model merely left out of
+  this run by `--only` still exists: the editor is given every known entity, and
+  reports none of their entries.
 - **Indentation** of inserted entries copies that of the neighbouring entry.
 - **Idempotent.** A second run with no model changes leaves the file byte-identical.
 
@@ -550,10 +583,10 @@ Differences from Anorm's copy, chosen so both stacks can run at once:
 
 | | Anorm | anorm-graphql |
 |---|---|---|
-| Compose project name | `anorm` | `anorm-graphql` |
+| Compose project name *(revised)* | `anorm`, per checkout `anorm-<dir>` | `anorm-graphql`, per checkout `agq-<dir>` |
 | Test database | `anorm_test` | `anorm_graphql_test` |
-| Default DB port | 3316 | 3317 |
-| Default phpMyAdmin port | 8096 | 8097 |
+| Default DB port *(revised)* | 3316 | 3319 (3317 is taken by an Anorm worktree) |
+| Default phpMyAdmin port *(revised)* | 8096 | 8099 |
 | `PHP_IDE_CONFIG` | `serverName=anorm` | `serverName=anorm-graphql` |
 
 One addition: `docker/anorm-graphql make [args]` runs `bin/anorm-graphql.php make` in
