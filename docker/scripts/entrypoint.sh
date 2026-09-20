@@ -24,8 +24,12 @@ else
 fi
 
 # Directories the suite and php.ini's error_log expect to exist but that are
-# gitignored, so a fresh worktree does not have them.
+# gitignored, so a fresh worktree does not have them. build/ itself is included
+# (not just its children): phpunit.xml's result cache lives directly in it, and
+# TempDir fixtures create scratch directories under build/tmp/.
 for dir in \
+    "$WORKSPACE/build" \
+    "$WORKSPACE/build/tmp" \
     "$WORKSPACE/build/coverage" \
     "$WORKSPACE/build/logs"
 do
@@ -35,6 +39,14 @@ do
         [ "$(id -u)" = "0" ] && chown "$APP_USER:$APP_USER" "$dir"
     fi
 done
+
+# The loop above only chowns a directory it just created, so a build/ that
+# already exists owned by root (from before this fix, or from an older image)
+# would otherwise be skipped. Non-recursive: the children are already handled
+# above, and nothing else under the workspace needs to change hands.
+if [ "$(id -u)" = "0" ] && [ "$(stat -c '%U' "$WORKSPACE/build")" != "$APP_USER" ]; then
+    chown "$APP_USER:$APP_USER" "$WORKSPACE/build"
+fi
 
 # A fresh worktree has no vendor/ (it is gitignored), and every useful command in
 # this container needs it. Install once, on first start, rather than making each
