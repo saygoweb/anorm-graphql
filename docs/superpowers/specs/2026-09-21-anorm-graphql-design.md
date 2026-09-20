@@ -14,9 +14,9 @@ The models may themselves have been generated from an existing database by
 `anorm make`, so the full path is: database → `anorm make` → models →
 `anorm-graphql make` → Types, Inputs, tests, and `ApiSchema.php` entries.
 
-The stack is the one already used in emdc-events, inthefish and saygoweb.com-my:
-`webonyx/graphql-php`, `simpod/graphql-utils`, `php-di/php-di`, composer PSR-4
-autoloading.
+The stack is `webonyx/graphql-php` 15, `php-di/php-di` and composer PSR-4
+autoloading. *(revised)* emdc-events and saygoweb.com-my are on webonyx 14 with
+`simpod/graphql-utils`; this package cannot follow them there, see §3.
 
 The use case prompting the work is a GraphQL API for FrontAccounting, in
 `frontaccounting/modules/graphql`.
@@ -88,6 +88,8 @@ input MangoInput {
 saygoweb/anorm-graphql
   bin/anorm-graphql.php             CLI entry point
   src/                              Anorm\GraphQL\            runtime (autoload)
+    Builder/FieldBuilder.php        (revised) in place of simpod/graphql-utils
+    Builder/ObjectBuilder.php
     GraphQLUtils.php
     Mapper.php
     ModelType.php
@@ -124,12 +126,27 @@ saygoweb/anorm-graphql
 
 `composer.json`:
 
-- `require` *(revised)*: `php: ^7.4 || ^8.0`, `saygoweb/anorm: ^3.2`,
-  `webonyx/graphql-php: ^14.8`, `simpod/graphql-utils: ^0.5.3`, `php-di/php-di: ^6.0`,
-  `wp-cli/php-cli-tools: ^0.11.10`. These are what emdc-events and saygoweb.com-my
-  declare, and both lock to webonyx 14.11.10, simpod 0.5.3 and php-di 6.4.0. inthefish
-  is on webonyx 0.13, simpod 0.3 and anorm 1.5, and is outside the supported range
-  until it is upgraded.
+- `require` *(revised twice)*: `php: ^7.4 || ^8.0`, `saygoweb/anorm: ^3.2`,
+  `webonyx/graphql-php: ^15.32.3`, `php-di/php-di: ^6.0`,
+  `wp-cli/php-cli-tools: ^0.11.10`. **No `simpod/graphql-utils`.**
+
+  Composer refuses every webonyx 14.x release over three denial-of-service
+  advisories (GHSA-r7cg-qjjm-xhqq unbounded parser recursion, high;
+  GHSA-fc86-6rv6-2jpm quadratic `OverlappingFieldsCanBeMerged`, high;
+  CVE-2026-40476, medium), fixed only in 15.32.3 and later. webonyx 15 still supports
+  PHP 7.4, but `simpod/graphql-utils` does not: 0.5.3 is its last release for PHP 7.4
+  and requires webonyx `^14`; 0.6 and later need PHP 8.1. The user chose webonyx 15
+  without simpod over raising the floor to PHP 8.1 (FrontAccounting and both existing
+  APIs are on 7.4) and over ignoring the advisories.
+
+  The runtime therefore ships `Anorm\GraphQL\Builder\FieldBuilder` and
+  `ObjectBuilder`, offering the simpod calls this codebase uses (`create`,
+  `setDescription`, `addArgument`, `setResolver`, `setDeprecationReason`, `setFields`,
+  `build`), so `GraphQLUtils` and the generated code read as designed.
+
+  Consequence: emdc-events and saygoweb.com-my (webonyx 14 + simpod) and inthefish
+  (webonyx 0.13) cannot adopt this package until they move to webonyx 15, at which
+  point their simpod imports become `Anorm\GraphQL\Builder` imports.
 - `require-dev`: `phpunit/phpunit: ^9.6`, `squizlabs/php_codesniffer`,
   `phpstan/phpstan`.
 - `suggest`: `phpunit/phpunit`, needed by consumers that extend `ModelTypeTestCase`.
@@ -147,8 +164,9 @@ stays free of any GraphQL dependency.
 
 ### 4.1 `GraphQLUtils`
 
-Moved as-is from emdc-events: `methodResolver`, `createField`, `createListField`.
-Namespace changes to `Anorm\GraphQL`; behaviour does not.
+Moved from emdc-events: `methodResolver`, `createField`, `createListField`.
+Namespace changes to `Anorm\GraphQL`, and *(revised)* the `FieldBuilder` it returns is
+`Anorm\GraphQL\Builder\FieldBuilder`; behaviour does not change.
 
 ### 4.2 `Mapper`
 
