@@ -2,6 +2,7 @@
 
 namespace Anorm\GraphQL\Test\Integration;
 
+use Anorm\GraphQL\Test\Fixtures\FailingReleasePdo;
 use Anorm\GraphQL\Test\Fixtures\OtherModel\DynamicWidgetModel;
 use Anorm\GraphQL\Test\Fixtures\Type\RecordingWidgetType;
 use Anorm\GraphQL\Test\Fixtures\Type\ScopedDocumentType;
@@ -342,6 +343,23 @@ class ModelTypeTest extends TestCase
             $this->assertStringContainsString('committed implicitly', $e->getMessage());
             $this->assertInstanceOf(\PDOException::class, $e->getPrevious(), 'the driver error is kept as the cause');
         }
+    }
+
+    public function testAFailureToReleaseThatIsNotAnImplicitCommitIsLeftAsItIs(): void
+    {
+        $pdo = TestEnvironment::connect(FailingReleasePdo::class);
+        $pdo->beginTransaction();
+        try {
+            $this->type->resolveUpsert(null, ['input' => [['name' => 'a']]], TestEnvironment::container($pdo));
+            $this->fail('expected the release to fail');
+        } catch (\PDOException $e) {
+            $this->assertStringContainsString('server has gone away', $e->getMessage());
+        } catch (\RuntimeException $e) {
+            $this->fail('a lost connection is not an implicit commit, and must not be called one: ' . $e->getMessage());
+        } finally {
+            $pdo->rollBack();
+        }
+        $this->assertSame(0, $this->rowCount());
     }
 
     public function testAnImplicitCommitWithNoOuterTransactionNeverSurfacesAsADriverError(): void

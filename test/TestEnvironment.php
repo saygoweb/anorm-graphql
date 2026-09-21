@@ -17,21 +17,32 @@ class TestEnvironment
     public static function pdo(): \PDO
     {
         if (self::$pdo === null) {
-            $host = getenv('DB_HOST') ?: 'db';
-            $name = getenv('DB_NAME') ?: 'anorm_graphql_test';
-            $user = getenv('DB_USER') ?: 'dev';
-            $pass = getenv('DB_PASS') ?: 'dev';
-            self::$pdo = new \PDO("mysql:host=$host;dbname=$name;charset=utf8mb4", $user, $pass);
-            self::$pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+            self::$pdo = self::connect();
         }
         return self::$pdo;
     }
 
-    /** A container that hands every model the same PDO. */
-    public static function container(): Container
+    /**
+     * A connection of its own, for a test that must break one without breaking the rest.
+     *
+     * @param string $class \PDO or a subclass of it
+     */
+    public static function connect(string $class = \PDO::class): \PDO
+    {
+        $host = getenv('DB_HOST') ?: 'db';
+        $name = getenv('DB_NAME') ?: 'anorm_graphql_test';
+        $user = getenv('DB_USER') ?: 'dev';
+        $pass = getenv('DB_PASS') ?: 'dev';
+        $pdo = new $class("mysql:host=$host;dbname=$name;charset=utf8mb4", $user, $pass);
+        $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+        return $pdo;
+    }
+
+    /** A container that hands every model the same PDO: the shared one unless given another. */
+    public static function container(?\PDO $pdo = null): Container
     {
         $builder = new ContainerBuilder();
-        $builder->addDefinitions([\PDO::class => self::pdo()]);
+        $builder->addDefinitions([\PDO::class => $pdo === null ? self::pdo() : $pdo]);
         return $builder->build();
     }
 

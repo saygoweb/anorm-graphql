@@ -340,6 +340,17 @@ abstract class ModelType extends ObjectType
     }
 
     /**
+     * Whether a failure to release or commit means the transaction had already ended:
+     * MySQL's 1305, "SAVEPOINT does not exist", or PHP 8's PDO noticing on commit().
+     * Nothing else is evidence of an implicit commit.
+     */
+    private function saysTheTransactionIsGone(\PDOException $e): bool
+    {
+        $driverCode = isset($e->errorInfo[1]) ? (int) $e->errorInfo[1] : 0;
+        return $driverCode === 1305 || stripos($e->getMessage(), 'no active transaction') !== false;
+    }
+
+    /**
      * Run $work so that it happens entirely or not at all. Inside somebody else's
      * transaction that means a savepoint, because MySQL transactions do not nest.
      *
@@ -375,7 +386,12 @@ abstract class ModelType extends ObjectType
             } else {
                 $pdo->commit();
             }
-        } catch (\Throwable $e) {
+        } catch (\PDOException $e) {
+            if (!$this->saysTheTransactionIsGone($e)) {
+                // A lost connection, a deadlock: those are what they say they are, and
+                // the server has rolled the work back. Relabelling them would be a lie.
+                throw $e;
+            }
             // Nothing in $work failed, yet the transaction it ran in is gone. In MySQL
             // that means a statement committed implicitly, which DDL does. It cannot be
             // undone from here, so say exactly what happened rather than let a bare
