@@ -27,6 +27,8 @@ class ImportTable
     private $fallbackOffset = null;
     /** @var bool */
     private $fallbackNeedsBlankLine = false;
+    /** @var bool true when the imports could not be read with confidence: then nothing is imported or trusted */
+    private $unsure = false;
     /** @var string */
     private $source;
 
@@ -45,6 +47,9 @@ class ImportTable
      */
     public function resolve($fqcn)
     {
+        if ($this->unsure) {
+            return '\\' . $fqcn;
+        }
         foreach ($this->bound as $binding) {
             if (\strcasecmp($binding['fqcn'], $fqcn) === 0) {
                 return $binding['name'];
@@ -110,6 +115,7 @@ class ImportTable
     private function parse(Tokens $tokens)
     {
         $namespace = '';
+        $namespaces = 0;
         $bracedNamespace = false;
         $afterOpenTag = null;
         $afterDeclare = null;
@@ -125,9 +131,15 @@ class ImportTable
                 $afterOpenTag = $this->endOfLine($token['offset'] + \strlen($token['text']) - 1);
             }
             if ($token['id'] === T_STRING && !$inUse && $this->isClassReference($tokens, $i)) {
-                // On 7.4 this also catches the parts of a qualified name. That only makes
-                // a name look taken when it is not, which costs a fully qualified name.
+                // On 7.4 this is also how the first part of `Type\Action\ActionType` is seen.
                 $this->referenced[\strtolower($token['text'])] = true;
+            } elseif (!$inUse && $tokens->isQualifiedNameToken($i)) {
+                // On 8.x that name is one token. PHP resolves its first part through the
+                // imports just as it does an unqualified name, so that part is in use too.
+                $parts = \explode('\\', $token['text']);
+                if (\strtolower($parts[0]) !== 'namespace') {
+                    $this->referenced[\strtolower($parts[0])] = true;
+                }
             }
             if ($tokens->depth[$i] !== 0) {
                 // A class's own name is bound too, wherever it is declared.
@@ -138,6 +150,7 @@ class ImportTable
                 $end = $this->statementEnd($tokens, $i);
                 $afterDeclare = $end === null ? $afterDeclare : $this->endOfLine($tokens->list[$end]['offset']);
             } elseif ($token['id'] === T_NAMESPACE) {
+                $namespaces++;
                 $name = $tokens->readName($tokens->nextCode($i));
                 $namespace = $name === null ? '' : \trim($name[0], '\\');
                 $end = $this->statementEnd($tokens, $i);
@@ -152,8 +165,12 @@ class ImportTable
             $this->noteDeclaredClass($tokens, $i, $namespace);
         }
 
-        if ($bracedNamespace) {
-            // `namespace X { ... }`: imports live inside the braces. Not worth guessing at.
+        if ($bracedNamespace || $namespaces > 1) {
+            // `namespace X { ... }`, or several namespaces in one file: which imports apply
+            // to the schema class is not worth guessing at.
+            $this->unsure = true;
+        }
+        if ($this->unsure) {
             $this->statements = array();
             $this->fallbackOffset = null;
             return;
@@ -242,6 +259,10 @@ class ImportTable
             }
             $i = $tokens->nextCode($i);
         }
+        if ($i !== $end) {
+            // Something in this statement was not understood, so what it binds is unknown.
+            $this->unsure = true;
+        }
         foreach ($classes as $class) {
             $parts = \explode('\\', $class[0]);
             $name = $class[1] === null ? \end($parts) : $class[1];
@@ -249,7 +270,7 @@ class ImportTable
         }
 
         $start = $tokens->list[$use]['offset'];
-        $lineStart = \strrpos(\substr($this->source, 0, $start), "\n");
+        $lineStart = $start === 0 ? false : \strrpos($this->source, "\n", $start - \strlen($this->source) - 1);
         $lineStart = $lineStart === false ? 0 : $lineStart + 1;
         $statementEnd = $this->endOfLine($tokens->list[$end]['offset']);
         $text = \substr($this->source, $lineStart, $statementEnd - $lineStart);

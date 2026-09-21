@@ -28,10 +28,12 @@ class SchemaEditor
      * @param string $source
      * @param TypeInfo[] $infos The entities of this run
      * @param string[] $knownEntities Every entity the models produce, including those
-     *                                this run leaves out; their entries are not orphans
+     *                                this run leaves out; their entries are not orphans.
+     *                                Required: leaving it out would call every marked
+     *                                entry of every other entity an orphan.
      * @return SchemaEditResult
      */
-    public function edit($source, array $infos, array $knownEntities = array())
+    public function edit($source, array $infos, array $knownEntities)
     {
         $result = new SchemaEditResult();
         $result->source = $source;
@@ -78,7 +80,9 @@ class SchemaEditor
                 }
             }
             $imports = new ImportTable($source, $tokens);
-            $eol = \strpos($source, "\r\n") === false ? "\n" : "\r\n";
+            // Whichever line ending the file mostly uses; one stray CRLF does not make a CRLF file.
+            $crlf = \substr_count($source, "\r\n");
+            $eol = $crlf > \substr_count($source, "\n") - $crlf ? "\r\n" : "\n";
 
             $messages = array();
             $splices = array();
@@ -92,12 +96,14 @@ class SchemaEditor
             }
             $splices = \array_merge($splices, $imports->splices($eol));
             $edited = $this->apply($source, $splices);
-            try {
-                // Belt and braces: whatever went wrong above, never write a file that does not parse.
-                $parsed = \token_get_all($edited, TOKEN_PARSE);
-                unset($parsed);
-            } catch (\ParseError $e) {
-                throw new SchemaShapeException('the edit would not have parsed: ' . $e->getMessage());
+            // Belt and braces: whatever went wrong above, never write a file that does not parse.
+            $problem = $this->parseError($edited);
+            if ($problem !== null) {
+                throw new SchemaShapeException(
+                    $this->parseError($source) === null
+                        ? 'internal error, please report it: the edit would not have parsed (' . $problem . ')'
+                        : 'the file does not parse under PHP ' . PHP_VERSION . ' (' . $problem . ')'
+                );
             }
         } catch (SchemaShapeException $e) {
             return $this->failure($result, $desired, $e->getMessage());
@@ -106,6 +112,18 @@ class SchemaEditor
         $result->source = $edited;
         $result->messages = \array_merge($result->messages, $messages);
         return $result;
+    }
+
+    /** @return string|null Why $code does not parse, or null when it does */
+    private function parseError($code)
+    {
+        try {
+            $parsed = \token_get_all($code, TOKEN_PARSE);
+            unset($parsed);
+            return null;
+        } catch (\ParseError $e) {
+            return $e->getMessage();
+        }
     }
 
     /**
@@ -158,6 +176,7 @@ class SchemaEditor
     {
         $resolve = array($imports, 'resolve');
         $texts = array();
+        $needsComma = array();
         $sortNames = array();
         $indents = array();
         $handWritten = array();
@@ -172,14 +191,22 @@ class SchemaEditor
         foreach ($array->entries as $entry) {
             $text = $entry->text;
             $name = $entry->primaryName();
-            if ($entry->owned && $name !== null && isset($desired[$name]) && !\in_array($name, $handWritten, true)) {
+            $rewrite = $entry->owned && $name !== null && isset($desired[$name]) && !\in_array($name, $handWritten, true);
+            if ($rewrite && isset($written[$name])) {
+                $messages[] = "duplicate: '$name' is marked as generated more than once; the later entry was left alone";
+                $rewrite = false;
+            } elseif ($rewrite) {
                 $lines = $this->entryLines($desired[$name][0], $desired[$name][1], $resolve);
                 // What followed the comma, a trailing comment perhaps, stays.
                 $text = $entry->beforeMarker . $this->render($entry->indent, $lines, $eol, $entry->afterComma);
                 $written[$name] = true;
-            } elseif ($entry->owned && !isset($known[(string) $name])) {
+            } elseif ($entry->owned && $name === null) {
+                $messages[] = 'orphaned: an entry is marked as generated but its field name cannot be read';
+            } elseif ($entry->owned && !isset($desired[$name]) && !isset($known[$name])) {
                 $messages[] = "orphaned: '$name' is marked as generated but no model produces it";
             }
+            // An entry kept as it was, with no comma after it, needs one if it stops being last.
+            $needsComma[] = !$rewrite && $entry->missingCommaAt !== null ? $entry->missingCommaAt : null;
             $texts[] = $text;
             $sortNames[] = $name;
             $indents[] = $entry->indent;
@@ -209,18 +236,14 @@ class SchemaEditor
             }
             $lines = $this->entryLines($spec[0], $spec[1], $resolve);
             \array_splice($texts, $at, 0, array($this->render($indent, $lines, $eol, $eol)));
+            \array_splice($needsComma, $at, 0, array(null));
             \array_splice($sortNames, $at, 0, array($name));
             \array_splice($indents, $at, 0, array($indent));
         }
 
-        // A hand-written last entry may have had no comma. It needs one once it is no longer last.
-        foreach ($array->entries as $entry) {
-            if ($entry->missingCommaAt === null || $entry->owned) {
-                continue;
-            }
-            $i = \array_search($entry->text, $texts, true);
-            if ($i !== false && $i < \count($texts) - 1) {
-                $texts[$i] = \substr($entry->text, 0, $entry->missingCommaAt) . ',' . \substr($entry->text, $entry->missingCommaAt);
+        foreach ($needsComma as $i => $at) {
+            if ($at !== null && $i < \count($texts) - 1) {
+                $texts[$i] = \substr($texts[$i], 0, $at) . ',' . \substr($texts[$i], $at);
             }
         }
 

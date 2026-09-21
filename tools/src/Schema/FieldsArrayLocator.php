@@ -242,7 +242,7 @@ class FieldsArrayLocator
 
     private function lineStart($source, $offset)
     {
-        $newline = \strrpos(\substr($source, 0, $offset), "\n");
+        $newline = $offset === 0 ? false : \strrpos($source, "\n", $offset - \strlen($source) - 1);
         return $newline === false ? 0 : $newline + 1;
     }
 

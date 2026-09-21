@@ -113,11 +113,34 @@ class Tokens
     {
         $name = '';
         $n = \count($this->list);
-        while ($i < $n && $this->isNamePart($i)) {
-            $name .= $this->list[$i]['text'];
-            $i++;
+        while ($i < $n) {
+            if ($this->isNamePart($i)) {
+                $name .= $this->list[$i]['text'];
+                $i++;
+                continue;
+            }
+            // PHP 7.4 allows whitespace and comments around the separators of a name
+            // (`Foo\` newline `Bar`); 8.x does not, and never gets here with such a file.
+            $next = $this->isTrivia($i) ? $this->nextCode($i) : null;
+            $joins = $next !== null && $name !== '' && $this->isNamePart($next)
+                && (\substr($name, -1) === '\\' || $this->list[$next]['id'] === T_NS_SEPARATOR);
+            if (!$joins) {
+                break;
+            }
+            $i = $next;
         }
         return $name === '' ? null : array($name, $i);
+    }
+
+    /** Whether the token is a qualified name in one piece, as PHP 8.x produces. */
+    public function isQualifiedNameToken($i)
+    {
+        foreach (array('T_NAME_QUALIFIED', 'T_NAME_RELATIVE') as $constant) {
+            if (\defined($constant) && $this->list[$i]['id'] === \constant($constant)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private function isNamePart($i)

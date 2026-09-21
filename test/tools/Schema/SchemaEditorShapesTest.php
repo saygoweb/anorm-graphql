@@ -93,6 +93,43 @@ class SchemaEditorShapesTest extends SchemaProbe
         $this->assertStringContainsString("->build(), // last, no comma\n", $result->source, 'the comma goes before the trailing comment');
     }
 
+    public function testAnOrphanedLastEntryWithoutACommaStillGetsOne(): void
+    {
+        $orphan = "                    // anorm-graphql\n                    \$this->generatedOnce('goneList', \$this->type(Gone::class))\n";
+        $source = $this->schema($this->entry('aaa') . $orphan);
+        $result = $this->edit($source, [$this->info('Zulu', true)]);
+        $this->assertSoundEdit($source, $result, [$this->info('Zulu', true)]);
+        $this->assertContains("orphaned: 'goneList' is marked as generated but no model produces it", $result->messages);
+        $this->assertStringContainsString("\$this->type(Gone::class)),\n", $result->source);
+    }
+
+    public function testTwoIdenticalLastEntriesDoNotConfuseTheCommaRepair(): void
+    {
+        $source = $this->schema($this->entry('aaa') . $this->entry('aaa', ''));
+        $result = $this->edit($source, [$this->info('Zulu', true)]);
+        $this->assertSoundEdit($source, $result, [$this->info('Zulu', true)]);
+    }
+
+    public function testAnOwnedEntryWithoutAReadableNameIsReportedAsSuch(): void
+    {
+        $source = $this->schema("                    // anorm-graphql\n                    \$this->mystery(),\n");
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        $this->assertSoundEdit($source, $result, [$this->info('Client', true)]);
+        $this->assertSame(['orphaned: an entry is marked as generated but its field name cannot be read'], $result->messages);
+    }
+
+    public function testTheSameNameMarkedTwiceIsReportedAndOnlyTheFirstRewritten(): void
+    {
+        $owned = "                    // anorm-graphql\n                    \$this->old('clientList'),\n";
+        $source = $this->schema($owned . $owned);
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        $this->assertFalse($result->failed);
+        $this->assertSame(1, substr_count($result->source, "createListField('clientList'"));
+        $this->assertSame(1, substr_count($result->source, "\$this->old('clientList')"));
+        $this->assertStringContainsString("duplicate: 'clientList'", implode("\n", $result->messages));
+        $this->assertSame($result->source, $this->edit($result->source, [$this->info('Client', true)])->source);
+    }
+
     public function testACommentBetweenTheMarkerAndTheCodeMakesTheEntryHandWritten(): void
     {
         $note = "                    // anorm-graphql\n                    // a note the developer added underneath the marker\n" . $this->entry('clientList');
@@ -213,6 +250,14 @@ class SchemaEditorShapesTest extends SchemaProbe
         $this->assertSame($result->source, $this->edit($result->source, [$this->info('Client')])->source);
     }
 
+    public function testOneStrayCrlfDoesNotMakeAnLfFileCrlf(): void
+    {
+        $source = str_replace("'name' => 'Query',\n", "'name' => 'Query',\r\n", $this->schema($this->entry('aaa')));
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        $this->assertFalse($result->failed, implode("\n", $result->messages));
+        $this->assertSame(1, substr_count($result->source, "\r"), 'inserted lines use the ending the file mostly uses');
+    }
+
     public function testABomAndAMissingFinalNewlineAreLeftAsTheyAre(): void
     {
         $source = "\xEF\xBB\xBF" . rtrim($this->schema($this->entry('aaa')), "\n");
@@ -292,6 +337,59 @@ class SchemaEditorShapesTest extends SchemaProbe
         $this->assertStringNotContainsString('use Anorm\GraphQL\GraphQLUtils;', $result->source, 'that would repoint the hand-written calls');
         $this->assertStringContainsString("\\Anorm\\GraphQL\\GraphQLUtils::createListField('clientList'", $result->source);
         $this->assertStringContainsString("GraphQLUtils::createField('aaa'", $result->source);
+    }
+
+    public function testTheFirstPartOfAQualifiedNameIsANameInUseToo(): void
+    {
+        // `Type\Action\ActionType` means App\GraphQL\Type\Action\ActionType. Importing a class
+        // called Type would repoint it. PHP 8 makes that name one token, 7.4 several.
+        $mine = "                    \$this->handWritten('aaa', \$this->type(Type\\Action\\ActionType::class), 'r')->build(),\n";
+        $source = $this->schema($mine, $mine);
+        $result = $this->edit($source, [$this->info('Client')]);
+        $this->assertSoundEdit($source, $result, [$this->info('Client')]);
+        $this->assertStringNotContainsString('use GraphQL\Type\Definition\Type;', $result->source);
+        $this->assertStringContainsString('\GraphQL\Type\Definition\Type::nonNull(', $result->source);
+    }
+
+    public function testAUseStatementSplitAcrossLinesStillBindsItsName(): void
+    {
+        $header = "<?php\n\nnamespace App\\GraphQL;\n\nuse GraphQL\\Type\\Definition\\\n    Type;\n";
+        $source = $this->schema($this->entry('aaa'), $this->entry('aaa'), $header);
+        $result = $this->edit($source, [$this->info('Client')]);
+        if (PHP_VERSION_ID >= 80000) {
+            // Whitespace inside a name stopped being legal in PHP 8: the file itself does not parse.
+            $this->assertFailsSafe($source, $result);
+            $this->assertStringContainsString('the file does not parse under PHP', $result->messages[0]);
+            return;
+        }
+        $this->assertSoundEdit($source, $result, [$this->info('Client')]);
+        $this->assertSame(0, preg_match('/^use GraphQL\\\\Type\\\\Definition\\\\Type;$/m', $result->source), 'already imported');
+        $this->assertStringContainsString(' Type::nonNull(Type::listOf(', $result->source);
+    }
+
+    public function testAUseStatementItCannotReadMeansNothingIsImported(): void
+    {
+        // `use` of a namespace-relative name is legal and odd enough not to be understood.
+        $header = "<?php\n\nnamespace App\\GraphQL;\n\nuse namespace\\Sub\\Thing;\n";
+        $source = $this->schema($this->entry('aaa'), '', $header);
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        if ($result->failed) {
+            $this->assertFailsSafe($source, $result);
+            return;
+        }
+        $this->assertLinesSurvive($source, $result->source);
+        $this->assertSame(1, substr_count($result->source, "\nuse "), 'no import was added');
+        $this->assertStringContainsString('\Anorm\GraphQL\GraphQLUtils::createListField(', $result->source);
+    }
+
+    public function testTwoNamespacesInOneFileGetFullyQualifiedNamesAndNoImports(): void
+    {
+        $body = substr($this->schema($this->entry('aaa'), $this->entry('aaa'), ''), 1);
+        $source = "<?php\n\nnamespace App\\Other;\n\nuse DI\\Container;\n\nclass Helper\n{\n}\n\nnamespace App\\GraphQL;\n\nuse GraphQL\\Type\\Schema;\n" . $body;
+        $result = $this->edit($source, [$this->info('Client')]);
+        $this->assertSoundEdit($source, $result, [$this->info('Client')]);
+        $this->assertSame(2, substr_count($result->source, "\nuse "), 'no import was added to either namespace');
+        $this->assertStringContainsString('\App\GraphQL\Type\Client\ClientType::class', $result->source);
     }
 
     public function testABracedNamespaceGetsFullyQualifiedNamesAndNoImports(): void
