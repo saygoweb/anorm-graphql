@@ -44,10 +44,18 @@ class TestEnvironment
         $pdo = self::pdo();
         $pdo->exec('DROP TABLE IF EXISTS `widgets`');
         $pdo->exec('DROP TABLE IF EXISTS `owners`');
+        $pdo->exec('DROP TABLE IF EXISTS `documents`');
         $pdo->exec(
             'CREATE TABLE `owners` (
                 `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
                 `name` VARCHAR(255) NULL
+            ) ENGINE=InnoDB'
+        );
+        $pdo->exec(
+            'CREATE TABLE `documents` (
+                `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                `type` INT NOT NULL,
+                `title` VARCHAR(255) NULL
             ) ENGINE=InnoDB'
         );
         $pdo->exec(

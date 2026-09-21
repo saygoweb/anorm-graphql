@@ -2,7 +2,9 @@
 
 namespace Anorm\GraphQL\Test\Integration;
 
+use Anorm\GraphQL\Test\Fixtures\OtherModel\DynamicWidgetModel;
 use Anorm\GraphQL\Test\Fixtures\Type\RecordingWidgetType;
+use Anorm\GraphQL\Test\Fixtures\Type\ScopedDocumentType;
 use Anorm\GraphQL\Test\TestEnvironment;
 use DI\Container;
 use GraphQL\Error\UserError;
@@ -24,6 +26,7 @@ class ModelTypeTest extends TestCase
     protected function setUp(): void
     {
         TestEnvironment::pdo()->exec('DELETE FROM `widgets`');
+        TestEnvironment::pdo()->exec('DELETE FROM `documents`');
         $this->type = new RecordingWidgetType();
         $this->context = TestEnvironment::container();
     }
@@ -140,6 +143,10 @@ class ModelTypeTest extends TestCase
     {
         $hostile = 'id` = 1 OR 1=1; DROP TABLE widgets; -- ';
         return [
+            'a key that looks like a number' => [['selector' => '{"2": 1}']],
+            'a key that looks like a list position' => [['selector' => '{"0": 1}']],
+            'a numeric key nested in $and' => [['selector' => '{"$and": [{"0": 1}]}']],
+            'an empty key' => [['selector' => '{"": 1}']],
             'selector key' => [['selector' => json_encode([$hostile => 1])]],
             'nested in $or' => [['selector' => json_encode(['$or' => [['name' => 'a'], [$hostile => 1]]])]],
             'sort string' => [['sort' => [$hostile]]],
@@ -153,6 +160,173 @@ class ModelTypeTest extends TestCase
         $selector = json_encode(['$or' => [['name' => 'a'], ['quantity' => ['$gte' => 3]]]]);
         $this->assertSame(['a', 'c'], $this->names(['selector' => $selector, 'sort' => ['name']]));
         $this->assertSame(['b'], $this->names(['selector' => '{"name": {"$in": ["b", "z"]}}']));
+    }
+
+    /**
+     * @dataProvider hostileIds
+     */
+    public function testAHostileIdIsBoundNeverConcatenated(string $id): void
+    {
+        $rows = $this->upsert([['name' => 'secret-a'], ['name' => 'secret-b']]);
+
+        foreach (['delete', 'upsert'] as $mutation) {
+            try {
+                if ($mutation === 'delete') {
+                    $this->type->resolveDelete(null, ['id' => [$id]], $this->context);
+                } else {
+                    $this->upsert([['id' => $id, 'name' => 'overwritten']]);
+                }
+                $this->fail("expected $mutation to find nothing for a hostile id");
+            } catch (UserError $e) {
+                $this->assertStringContainsString('not found', $e->getMessage());
+            }
+        }
+        $this->assertSame(['secret-a', 'secret-b'], $this->names(['sort' => ['name']]), 'no row was touched');
+        $this->assertSame(
+            [['create', null], ['create', null], ['list', null]],
+            $this->type->authorized,
+            'authorize() must never be shown a row the client did not ask for'
+        );
+        $this->assertNotEmpty($rows);
+    }
+
+    /** @return array<string, array<int, string>> */
+    public function hostileIds(): array
+    {
+        return [
+            'tautology' => ["0' OR '1'='1"],
+            'tautology, numeric' => ['0 OR 1=1'],
+            'union' => ["0' UNION SELECT 1,2,3,4,5,6,7 -- "],
+            'stacked' => ["1'; DELETE FROM widgets; -- "],
+        ];
+    }
+
+    public function testAnIdThatOnlyStartsWithTheKeyIsNotThatRow(): void
+    {
+        $id = $this->upsert([['name' => 'a']])[0]['id'];
+        foreach ([$id . "' -- ", $id . ' ', '0' . $id, $id . '.0'] as $almost) {
+            try {
+                $this->type->resolveDelete(null, ['id' => [$almost]], $this->context);
+                $this->fail("expected '$almost' to find nothing");
+            } catch (UserError $e) {
+                $this->assertStringContainsString('not found', $e->getMessage());
+            }
+        }
+        $this->assertSame(1, $this->rowCount());
+        $this->assertCount(1, $this->type->resolveDelete(null, ['id' => [(int) $id]], $this->context), 'an integer id is fine');
+    }
+
+    /**
+     * @dataProvider malformedSelectors
+     */
+    public function testAMalformedSelectorIsAClientSafeError(string $selector): void
+    {
+        $this->expectException(UserError::class);
+        $this->names(['selector' => $selector]);
+    }
+
+    /** @return array<string, array<int, string>> */
+    public function malformedSelectors(): array
+    {
+        return [
+            '$and is not a list' => ['{"$and": "not-an-array"}'],
+            'an unknown operator' => ['{"name": {"$nope": 1}}'],
+            'a list, not an object' => ['[{"name": "a"}]'],
+            'a bare string' => ['"name"'],
+        ];
+    }
+
+    public function testAFieldNamedLikeAnOperatorIsRefusedInASelectorWithAReason(): void
+    {
+        $invoices = new ScopedDocumentType('InvoiceType', 10);
+        try {
+            $invoices->resolveList(null, ['query' => ['selector' => '{"type": 10}']], $this->context);
+            $this->fail("expected 'type' to be refused");
+        } catch (UserError $e) {
+            $this->assertStringContainsString("reads that word as an operator", $e->getMessage());
+        }
+    }
+
+    public function testAScopeSeparatesTwoTypesOverOneTable(): void
+    {
+        $invoices = new ScopedDocumentType('InvoiceType', 10);
+        $quotes = new ScopedDocumentType('QuoteType', 32);
+
+        $invoice = $invoices->resolveUpsert(null, ['input' => [['title' => 'inv']]], $this->context)[0];
+        $quote = $quotes->resolveUpsert(null, ['input' => [['title' => 'quo']]], $this->context)[0];
+        $this->assertEquals(10, $invoice['type'], 'the scope is stamped on a create');
+        $this->assertEquals(32, $quote['type']);
+
+        $this->assertSame(['inv'], array_column($invoices->resolveList(null, [], $this->context), 'title'));
+        $this->assertSame(['quo'], array_column($quotes->resolveList(null, [], $this->context), 'title'));
+        $query = ['selector' => '{"title": {"$in": ["inv", "quo"]}}'];
+        $this->assertSame(
+            ['quo'],
+            array_column($quotes->resolveList(null, ['query' => $query], $this->context), 'title'),
+            'the scope is ANDed with the selector, not replaced by it'
+        );
+
+        $outsideScope = [
+            'resolveDelete' => ['id' => [$invoice['id']]],
+            'resolveUpsert' => ['input' => [['id' => $invoice['id'], 'title' => 'x']]],
+        ];
+        foreach ($outsideScope as $method => $args) {
+            try {
+                $quotes->$method(null, $args, $this->context);
+                $this->fail("expected $method to find nothing outside its scope");
+            } catch (UserError $e) {
+                $this->assertStringContainsString('not found', $e->getMessage());
+            }
+        }
+        $this->assertSame(['inv'], array_column($invoices->resolveList(null, [], $this->context), 'title'));
+    }
+
+    public function testAnInputCannotMoveARowOutOfItsScope(): void
+    {
+        $invoices = new ScopedDocumentType('InvoiceType', 10);
+        $id = $invoices->resolveUpsert(null, ['input' => [['title' => 'inv', 'type' => 10]]], $this->context)[0]['id'];
+        try {
+            $invoices->resolveUpsert(null, ['input' => [['id' => $id, 'type' => 32]]], $this->context);
+            $this->fail('expected the scope property to be refused');
+        } catch (UserError $e) {
+            $this->assertStringContainsString("'type' is fixed for InvoiceType", $e->getMessage());
+        }
+        $this->assertCount(1, $invoices->resolveList(null, [], $this->context));
+    }
+
+    public function testAScopeNamingAnUnknownPropertyIsADeveloperError(): void
+    {
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage("'type' is not a property");
+        (new ScopedDocumentType('Broken', 1, \Anorm\GraphQL\Test\Fixtures\Model\WidgetModel::class))
+            ->resolveList(null, [], $this->context);
+    }
+
+    public function testMutationsRefuseAModelInDynamicMode(): void
+    {
+        $type = new ScopedDocumentType('Dynamic', 1, DynamicWidgetModel::class);
+        foreach (['resolveUpsert' => ['input' => [['name' => 'a']]], 'resolveDelete' => ['id' => [1]]] as $method => $args) {
+            try {
+                $type->$method(null, $args, $this->context);
+                $this->fail("expected $method to refuse dynamic mode");
+            } catch (\LogicException $e) {
+                $this->assertStringContainsString('static mode', $e->getMessage());
+            }
+        }
+        $this->assertSame(0, $this->rowCount());
+    }
+
+    public function testAFailedRollbackDoesNotHideTheRealError(): void
+    {
+        TestEnvironment::pdo()->beginTransaction();
+        $this->type->failOnName = 'b';
+        $this->type->ddlBeforeFailing = true;
+        try {
+            $this->upsert([['name' => 'a'], ['name' => 'b']]);
+            $this->fail('expected the second row to fail');
+        } catch (\Throwable $e) {
+            $this->assertSame('beforeWrite failed on b', $e->getMessage(), get_class($e));
+        }
     }
 
     public function testOneFailingRowRollsBackTheWholeUpsert(): void
