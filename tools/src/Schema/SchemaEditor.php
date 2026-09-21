@@ -6,30 +6,21 @@ use Anorm\GraphQL\Tools\TypeInfo;
 /**
  * Maintains the generated Query and Mutation entries of an existing ApiSchema.php.
  *
- * Only entries led by the marker comment are ever rewritten. Everything else is
- * copied through byte for byte, and when the file is not shaped as expected the
- * source is returned untouched.
+ * Only entries whose code is led directly by the marker comment are ever rewritten.
+ * Everything else is copied through byte for byte. When the file is not shaped as
+ * expected, or the result would not parse, the source is returned untouched.
  */
 class SchemaEditor
 {
-    const RUNTIME_IMPORTS = array(
-        'Anorm\GraphQL\GraphQLUtils',
-        'Anorm\GraphQL\Type\MangoInput',
-        'GraphQL\Type\Definition\Type',
-    );
-
-    /** @var FieldsArrayLocator */
-    private $locator;
+    const GRAPHQL_UTILS = 'Anorm\GraphQL\GraphQLUtils';
+    const MANGO_INPUT = 'Anorm\GraphQL\Type\MangoInput';
+    const TYPE = 'GraphQL\Type\Definition\Type';
 
     /** @var string Namespace of the generated Types, no trailing backslash */
     private $typeNamespace;
 
-    /** @var array<string, bool> Field names that belong to an entity that still exists */
-    private $known = array();
-
     public function __construct($typeNamespace)
     {
-        $this->locator = new FieldsArrayLocator();
         $this->typeNamespace = \trim($typeNamespace, '\\');
     }
 
@@ -48,215 +39,236 @@ class SchemaEditor
             return $result;
         }
 
-        $this->known = array();
-        foreach ($knownEntities as $entity) {
-            foreach (array('List', 'Delete', 'Upsert') as $suffix) {
-                $this->known[\lcfirst($entity) . $suffix] = true;
-            }
-        }
-
         $desired = array('query' => array(), 'mutation' => array());
         foreach ($infos as $info) {
-            foreach ($this->entriesFor($info) as $rootKey => $entries) {
-                $desired[$rootKey] += $entries;
-            }
-        }
-
-        foreach (array('query', 'mutation') as $rootKey) {
-            if ($this->locator->locate($source, $rootKey) === null) {
-                $result->failed = true;
-                $result->messages[] = "ApiSchema not changed: could not find a literal 'fields' => [ ... ] array under '$rootKey'";
-            }
-        }
-        if ($result->failed) {
-            foreach ($desired as $entries) {
-                foreach ($entries as $lines) {
-                    $result->paste[] = \implode("\n", $lines);
+            foreach ($this->fieldNames($info) as $rootKey => $kinds) {
+                foreach ($kinds as $kind => $name) {
+                    if (isset($desired['query'][$name]) || isset($desired['mutation'][$name])) {
+                        $result->messages[] = "skipped: '{$info->entity}' would define '$name', which another entity already defines";
+                        continue;
+                    }
+                    $desired[$rootKey][$name] = array($kind, $info);
                 }
             }
-            return $result;
+        }
+        $known = array();
+        foreach ($knownEntities as $entity) {
+            foreach (array('List', 'Delete', 'Upsert') as $suffix) {
+                $known[\lcfirst($entity) . $suffix] = true;
+            }
+        }
+        foreach ($infos as $info) {
+            // For an entity of this run, what it produces now is known exactly.
+            foreach (array('List', 'Delete', 'Upsert') as $suffix) {
+                unset($known[$info->fieldPrefix() . $suffix]);
+            }
         }
 
-        $edited = $source;
-        foreach (array('query', 'mutation') as $rootKey) {
-            // Located afresh each time: the first edit moves every later offset.
-            $array = $this->locator->locate($edited, $rootKey);
-            $edited = $this->editArray($edited, $array, $desired[$rootKey], $result);
+        try {
+            $tokens = new Tokens($source);
+            $locator = new FieldsArrayLocator();
+            $arrays = array();
+            foreach (array('query', 'mutation') as $rootKey) {
+                $arrays[$rootKey] = $locator->locate($source, $tokens, $rootKey);
+                $needed = $rootKey === 'query' || $desired['mutation'];
+                if ($arrays[$rootKey] === null && $needed) {
+                    throw new SchemaShapeException(
+                        "could not find '$rootKey' => new ObjectType([ ... 'fields' => [ ... ] ... ])"
+                    );
+                }
+            }
+            $imports = new ImportTable($source, $tokens);
+            $eol = \strpos($source, "\r\n") === false ? "\n" : "\r\n";
+
+            $messages = array();
+            $splices = array();
+            foreach (array('query', 'mutation') as $rootKey) {
+                if ($arrays[$rootKey] === null) {
+                    continue;
+                }
+                $interior = $this->editArray($arrays[$rootKey], $desired[$rootKey], $known, $imports, $eol, $messages);
+                $array = $arrays[$rootKey];
+                $splices[] = array($array->start, $array->end - $array->start, $interior);
+            }
+            $splices = \array_merge($splices, $imports->splices($eol));
+            $edited = $this->apply($source, $splices);
+            try {
+                // Belt and braces: whatever went wrong above, never write a file that does not parse.
+                $parsed = \token_get_all($edited, TOKEN_PARSE);
+                unset($parsed);
+            } catch (\ParseError $e) {
+                throw new SchemaShapeException('the edit would not have parsed: ' . $e->getMessage());
+            }
+        } catch (SchemaShapeException $e) {
+            return $this->failure($result, $desired, $e->getMessage());
         }
-        $result->source = $this->addImports($edited, $this->importsFor($infos));
+
+        $result->source = $edited;
+        $result->messages = \array_merge($result->messages, $messages);
         return $result;
     }
 
     /**
-     * @return array<string, array<string, string[]>> root key => field name => lines of code
+     * @return array<string, array<string, string>> root key => kind ('List', 'Delete', 'Upsert') => field name
      */
-    public function entriesFor(TypeInfo $info)
+    private function fieldNames(TypeInfo $info)
     {
         $prefix = $info->fieldPrefix();
-        $type = $info->entity . 'Type';
-        $input = $info->entity . 'Input';
-        $entries = array('query' => array(), 'mutation' => array());
-        $entries['query'][$prefix . 'List'] = array(
-            "GraphQLUtils::createListField('{$prefix}List', \$this->type({$type}::class), 'resolveList')",
-            "    ->addArgument('query', \$this->type(MangoInput::class))",
-            "    ->build(),",
-        );
-        if ($info->readOnly) {
-            return $entries;
+        $names = array('query' => array('List' => $prefix . 'List'), 'mutation' => array());
+        if (!$info->readOnly) {
+            $names['mutation'] = array('Delete' => $prefix . 'Delete', 'Upsert' => $prefix . 'Upsert');
         }
-        $entries['mutation'][$prefix . 'Delete'] = array(
-            "GraphQLUtils::createListField('{$prefix}Delete', \$this->type({$type}::class), 'resolveDelete')",
-            "    ->addArgument('id', Type::nonNull(Type::listOf(Type::nonNull(Type::id()))))",
-            "    ->build(),",
-        );
-        $entries['mutation'][$prefix . 'Upsert'] = array(
-            "GraphQLUtils::createListField('{$prefix}Upsert', \$this->type({$type}::class), 'resolveUpsert')",
-            "    ->addArgument('input', Type::nonNull(Type::listOf(Type::nonNull(\$this->type({$input}::class)))))",
-            "    ->build(),",
-        );
-        return $entries;
+        return $names;
     }
 
     /**
-     * @param TypeInfo[] $infos
+     * The lines of one entry, without indentation and ending in its comma.
+     *
+     * @param string $kind 'List', 'Delete' or 'Upsert'
+     * @param callable $name Turns a fully qualified class name into the text to write for it
      * @return string[]
      */
-    private function importsFor(array $infos)
+    public function entryLines($kind, TypeInfo $info, callable $name)
     {
-        $imports = self::RUNTIME_IMPORTS;
-        foreach ($infos as $info) {
-            $base = $this->typeNamespace . '\\' . $info->entity . '\\' . $info->entity;
-            $imports[] = $base . 'Type';
-            if (!$info->readOnly) {
-                $imports[] = $base . 'Input';
-            }
+        $field = $info->fieldPrefix() . $kind;
+        $base = $this->typeNamespace . '\\' . $info->entity . '\\' . $info->entity;
+        $utils = $name(self::GRAPHQL_UTILS);
+        $type = $name($base . 'Type');
+        $first = "{$utils}::createListField('$field', \$this->type({$type}::class), 'resolve$kind')";
+        if ($kind === 'List') {
+            $argument = "->addArgument('query', \$this->type(" . $name(self::MANGO_INPUT) . '::class))';
+        } elseif ($kind === 'Delete') {
+            $t = $name(self::TYPE);
+            $argument = "->addArgument('id', {$t}::nonNull({$t}::listOf({$t}::nonNull({$t}::id()))))";
+        } else {
+            $t = $name(self::TYPE);
+            $input = $name($base . 'Input');
+            $argument = "->addArgument('input', {$t}::nonNull({$t}::listOf({$t}::nonNull(\$this->type({$input}::class)))))";
         }
-        return $imports;
+        return array($first, '    ' . $argument, '    ->build(),');
     }
 
     /**
-     * @param array<string, string[]> $desired field name => lines of code
+     * @param array<string, array{0: string, 1: TypeInfo}> $desired field name => kind and entity
+     * @param array<string, bool> $known Field names of entities that exist but are not in this run
+     * @param string[] $messages
+     * @return string The new inside of the array
      */
-    private function editArray($source, FieldsArray $array, array $desired, SchemaEditResult $result)
+    private function editArray(FieldsArray $array, array $desired, array $known, ImportTable $imports, $eol, array &$messages)
     {
-        $segments = array();
-        $names = array();
-        $commaless = null;
+        $resolve = array($imports, 'resolve');
+        $texts = array();
+        $sortNames = array();
+        $indents = array();
+        $handWritten = array();
+        foreach ($array->entries as $entry) {
+            if (!$entry->owned) {
+                $handWritten = \array_merge($handWritten, $entry->names);
+            }
+        }
+        \ksort($desired, SORT_STRING);
+
+        $written = array();
         foreach ($array->entries as $entry) {
             $text = $entry->text;
-            if ($entry->owned && $entry->name !== null && isset($desired[$entry->name])) {
-                $text = $this->render($entry->lead, $entry->indent, $desired[$entry->name]);
-            } elseif ($entry->owned && !isset($this->known[(string) $entry->name])) {
-                $result->messages[] = "orphaned: '{$entry->name}' is marked as generated but no model produces it";
-            } elseif ($entry->name !== null && isset($desired[$entry->name])) {
-                $result->messages[] = "collision: '{$entry->name}' already exists and is not marked as generated; left alone";
+            $name = $entry->primaryName();
+            if ($entry->owned && $name !== null && isset($desired[$name]) && !\in_array($name, $handWritten, true)) {
+                $lines = $this->entryLines($desired[$name][0], $desired[$name][1], $resolve);
+                // What followed the comma, a trailing comment perhaps, stays.
+                $text = $entry->beforeMarker . $this->render($entry->indent, $lines, $eol, $entry->afterComma);
+                $written[$name] = true;
+            } elseif ($entry->owned && !isset($known[(string) $name])) {
+                $messages[] = "orphaned: '$name' is marked as generated but no model produces it";
             }
-            if (!$entry->hasComma) {
-                $commaless = $entry->name;
-            }
-            $segments[] = $text;
-            $names[] = $entry->name;
+            $texts[] = $text;
+            $sortNames[] = $name;
+            $indents[] = $entry->indent;
         }
 
-        $existing = \array_flip(\array_filter($names, 'is_string'));
-        $missing = \array_diff_key($desired, $existing);
-        \ksort($missing, SORT_STRING);
-
         $defaultIndent = $array->entries ? $array->entries[0]->indent : $array->bracketIndent . '    ';
-        foreach ($missing as $name => $lines) {
-            $at = \count($segments);
-            foreach ($names as $i => $existingName) {
-                if ($existingName !== null && \strcmp($existingName, $name) > 0) {
+        foreach ($desired as $name => $spec) {
+            if (isset($written[$name])) {
+                continue;
+            }
+            if (\in_array($name, $handWritten, true)) {
+                $messages[] = "collision: '$name' already exists and is not marked as generated; left alone";
+                continue;
+            }
+            $at = \count($texts);
+            foreach ($sortNames as $i => $existing) {
+                if ($existing !== null && \strcmp($existing, $name) > 0) {
                     $at = $i;
                     break;
                 }
             }
             $indent = $defaultIndent;
-            if (isset($array->entries[$at])) {
-                $indent = $array->entries[$at]->indent;
-            } elseif ($array->entries) {
-                $indent = $array->entries[\count($array->entries) - 1]->indent;
+            if (isset($indents[$at])) {
+                $indent = $indents[$at];
+            } elseif ($indents) {
+                $indent = $indents[\count($indents) - 1];
             }
-            \array_splice($segments, $at, 0, array($this->render("\n", $indent, $lines)));
-            \array_splice($names, $at, 0, array($name));
-            // Keep $array->entries aligned with $segments for the indent lookups above.
-            $placeholder = new FieldsEntry();
-            $placeholder->indent = $indent;
-            \array_splice($array->entries, $at, 0, array($placeholder));
+            $lines = $this->entryLines($spec[0], $spec[1], $resolve);
+            \array_splice($texts, $at, 0, array($this->render($indent, $lines, $eol, $eol)));
+            \array_splice($sortNames, $at, 0, array($name));
+            \array_splice($indents, $at, 0, array($indent));
         }
 
-        // A hand-written last entry may have had no comma; it needs one if it is no longer last.
-        $last = \count($segments) - 1;
-        foreach ($names as $i => $existingName) {
-            if ($commaless !== null && $existingName === $commaless && $i < $last && \substr(\rtrim($segments[$i]), -1) !== ',') {
-                $segments[$i] .= ',';
-            }
-        }
-
-        $tail = $array->tail;
-        if ($segments && \strpos($tail, "\n") === false) {
-            $tail = "\n" . $array->bracketIndent . $tail;
-        }
-        return \substr($source, 0, $array->start) . \implode('', $segments) . $tail . \substr($source, $array->end);
-    }
-
-    /**
-     * @param string $lead Whitespace before the marker comment, ending at the marker's indentation
-     * @param string[] $lines
-     */
-    private function render($lead, $indent, array $lines)
-    {
-        if (\strpos($lead, "\n") === false) {
-            $lead = "\n" . $indent;
-        } elseif (\substr($lead, -1) === "\n") {
-            $lead .= $indent;
-        }
-        return $lead . FieldsArrayLocator::MARKER . "\n" . $indent . \implode("\n" . $indent, $lines);
-    }
-
-    /**
-     * Add each missing `use` line in alphabetical position. Nothing is ever removed.
-     * Line based on purpose: PHP 7.4 and 8.x tokenize qualified names differently.
-     *
-     * @param string[] $imports Fully qualified class names
-     */
-    private function addImports($source, array $imports)
-    {
-        \sort($imports, SORT_STRING);
-        foreach ($imports as $import) {
-            $lines = \explode("\n", $source);
-            $uses = array();
-            $namespaceLine = null;
-            foreach ($lines as $i => $line) {
-                if (\preg_match('/^\s*(abstract\s+|final\s+)?class\s/', $line)) {
-                    break;
-                }
-                if (\preg_match('/^namespace\s/', $line)) {
-                    $namespaceLine = $i;
-                }
-                if (\preg_match('/^use\s+\\\\?([\w\\\\]+)(\s+as\s+\w+)?\s*;/', $line, $m)) {
-                    $uses[$i] = $m[1];
-                }
-            }
-            if (\in_array($import, $uses, true)) {
+        // A hand-written last entry may have had no comma. It needs one once it is no longer last.
+        foreach ($array->entries as $entry) {
+            if ($entry->missingCommaAt === null || $entry->owned) {
                 continue;
             }
-            $newLine = 'use ' . $import . ';';
-            if (!$uses) {
-                $at = $namespaceLine === null ? 1 : $namespaceLine + 1;
-                \array_splice($lines, $at, 0, array('', $newLine));
-            } else {
-                $at = \max(\array_keys($uses)) + 1;
-                foreach ($uses as $i => $existing) {
-                    if (\strcmp($existing, $import) > 0) {
-                        $at = $i;
-                        break;
-                    }
-                }
-                \array_splice($lines, $at, 0, array($newLine));
+            $i = \array_search($entry->text, $texts, true);
+            if ($i !== false && $i < \count($texts) - 1) {
+                $texts[$i] = \substr($entry->text, 0, $entry->missingCommaAt) . ',' . \substr($entry->text, $entry->missingCommaAt);
             }
-            $source = \implode("\n", $lines);
+        }
+
+        if ($array->emptyOnOneLine) {
+            return $texts ? $eol . \implode('', $texts) . $array->bracketIndent : '';
+        }
+        return $array->head . \implode('', $texts) . $array->tail;
+    }
+
+    /**
+     * @param string[] $lines
+     * @param string $afterComma What follows the entry's comma: normally just the line ending
+     */
+    private function render($indent, array $lines, $eol, $afterComma)
+    {
+        return $indent . FieldsArrayLocator::MARKER . $eol . $indent . \implode($eol . $indent, $lines) . $afterComma;
+    }
+
+    /**
+     * @param array<int, array{0: int, 1: int, 2: string}> $splices Offsets are into $source as given
+     */
+    private function apply($source, array $splices)
+    {
+        \usort($splices, function ($a, $b) {
+            return $b[0] <=> $a[0];
+        });
+        foreach ($splices as $splice) {
+            $source = \substr($source, 0, $splice[0]) . $splice[2] . \substr($source, $splice[0] + $splice[1]);
         }
         return $source;
+    }
+
+    /**
+     * @param array<string, array<string, array{0: string, 1: TypeInfo}>> $desired
+     */
+    private function failure(SchemaEditResult $result, array $desired, $why)
+    {
+        $result->failed = true;
+        $result->messages[] = 'ApiSchema not changed: ' . $why;
+        $fullyQualified = function ($fqcn) {
+            return '\\' . $fqcn;
+        };
+        foreach ($desired as $rootKey => $entries) {
+            foreach ($entries as $spec) {
+                $result->paste[$rootKey][] = FieldsArrayLocator::MARKER . "\n"
+                    . \implode("\n", $this->entryLines($spec[0], $spec[1], $fullyQualified));
+            }
+        }
+        return $result;
     }
 }

@@ -2,191 +2,255 @@
 namespace Anorm\GraphQL\Tools\Schema;
 
 /**
- * Finds the `'fields' => [ ... ]` array under a root key of an ApiSchema and splits
- * it into entries, using PHP's own tokenizer so that brackets, strings and comments
- * are never misread. Only token kinds that are identical on PHP 7.4 and 8.x are
- * relied on.
+ * Finds the fields array of the Query or Mutation type in an ApiSchema and splits it
+ * into entries.
+ *
+ * It is deliberately narrow. The array must be reached as
+ * `'query' => new ObjectType([ ... 'fields' => [ ... ] ... ])`, with `'fields'` a direct
+ * key of the ObjectType's config, and it must be written one entry per line. Anything
+ * else is refused with a SchemaShapeException, because a wrong guess here edits the
+ * wrong part of somebody's hand-written file.
  */
 class FieldsArrayLocator
 {
     const MARKER = '// anorm-graphql';
 
     /**
-     * @param string $source PHP source of the schema file
+     * @param string $source
+     * @param Tokens $tokens Of the same source
      * @param string $rootKey 'query' or 'mutation'
-     * @return FieldsArray|null null when the expected structure is not there
+     * @return FieldsArray|null null when the schema has no such root key in the expected form
+     * @throws SchemaShapeException when it is there but not in a shape that is safe to edit
      */
-    public function locate($source, $rootKey)
+    public function locate($source, Tokens $tokens, $rootKey)
     {
-        $tokens = $this->tokens($source);
-        $count = \count($tokens);
-        $rootAt = $this->findKey($tokens, 0, $count, $rootKey);
-        if ($rootAt === null) {
+        $configs = $this->objectTypeConfigs($tokens, $rootKey);
+        if (!$configs) {
             return null;
         }
-        $fieldsAt = $this->findKey($tokens, $rootAt + 1, $count, 'fields');
-        if ($fieldsAt === null) {
-            return null;
+        if (\count($configs) > 1) {
+            throw new SchemaShapeException("'$rootKey' => new ObjectType([...]) appears more than once");
         }
-        $open = $this->nextCode($tokens, $this->nextCode($tokens, $fieldsAt) ?? $count);
-        if ($open === null || $tokens[$open]['text'] !== '[') {
-            return null;
+        $config = $configs[0];
+
+        $opens = array();
+        for ($i = $config + 1; $i < $tokens->closes[$config]; $i++) {
+            if ($tokens->parent[$i] !== $config || !$tokens->isString($i, 'fields')) {
+                continue;
+            }
+            $arrow = $tokens->nextCode($i);
+            if (!$tokens->isId($arrow, T_DOUBLE_ARROW)) {
+                continue;
+            }
+            $open = $tokens->nextCode($arrow);
+            if (!$tokens->is($open, '[')) {
+                throw new SchemaShapeException("'fields' under '$rootKey' is not a literal [ ... ] array");
+            }
+            $opens[] = $open;
         }
-        return $this->split($source, $tokens, $open);
+        if (\count($opens) !== 1) {
+            throw new SchemaShapeException("expected exactly one 'fields' key in the '$rootKey' ObjectType");
+        }
+        return $this->split($source, $tokens, $opens[0], $rootKey);
     }
 
     /**
-     * @return array<int, array{id: int|null, text: string, offset: int}>
+     * Where `'<rootKey>' => new ObjectType([` occurs.
+     *
+     * @return int[] Index of the `[` that opens each config array
      */
-    private function tokens($source)
+    private function objectTypeConfigs(Tokens $tokens, $rootKey)
     {
-        $result = array();
-        $offset = 0;
-        foreach (\token_get_all($source) as $token) {
-            $id = \is_array($token) ? $token[0] : null;
-            $text = \is_array($token) ? $token[1] : $token;
-            $result[] = array('id' => $id, 'text' => $text, 'offset' => $offset);
-            $offset += \strlen($text);
-        }
-        return $result;
-    }
-
-    /** Index of the string literal $key that is followed by `=>`, or null. */
-    private function findKey(array $tokens, $from, $count, $key)
-    {
-        for ($i = $from; $i < $count; $i++) {
-            if ($tokens[$i]['id'] !== T_CONSTANT_ENCAPSED_STRING) {
+        $found = array();
+        foreach ($tokens->list as $i => $token) {
+            if (!$tokens->isString($i, $rootKey)) {
                 continue;
             }
-            if (\substr($tokens[$i]['text'], 1, -1) !== $key) {
+            $arrow = $tokens->nextCode($i);
+            $new = $tokens->isId($arrow, T_DOUBLE_ARROW) ? $tokens->nextCode($arrow) : null;
+            if (!$tokens->isId($new, T_NEW)) {
                 continue;
             }
-            $next = $this->nextCode($tokens, $i);
-            if ($next !== null && $tokens[$next]['id'] === T_DOUBLE_ARROW) {
-                return $i;
+            $name = $tokens->readName($tokens->nextCode($new));
+            if ($name === null || !\preg_match('/(^|\\\\)ObjectType$/', $name[0])) {
+                continue;
+            }
+            $paren = $tokens->isTrivia($name[1]) ? $tokens->nextCode($name[1]) : $name[1];
+            $bracket = $tokens->is($paren, '(') ? $tokens->nextCode($paren) : null;
+            if ($tokens->is($bracket, '[')) {
+                $found[] = $bracket;
             }
         }
-        return null;
+        return $found;
     }
 
-    /** Index of the next token after $i that is not whitespace or a comment. */
-    private function nextCode(array $tokens, $i)
+    private function split($source, Tokens $tokens, $open, $rootKey)
     {
-        $count = \count($tokens);
-        for ($j = $i + 1; $j < $count; $j++) {
-            if (!$this->isTrivia($tokens[$j])) {
-                return $j;
-            }
-        }
-        return null;
-    }
-
-    private function isTrivia(array $token)
-    {
-        return $token['id'] === T_WHITESPACE || $token['id'] === T_COMMENT || $token['id'] === T_DOC_COMMENT;
-    }
-
-    private function split($source, array $tokens, $open)
-    {
+        $close = $tokens->closes[$open];
         $array = new FieldsArray();
-        $array->start = $tokens[$open]['offset'] + 1;
-        $array->bracketIndent = $this->lineIndent($source, $tokens[$open]['offset']);
+        $array->start = $tokens->list[$open]['offset'] + 1;
+        $array->end = $tokens->list[$close]['offset'];
+        $array->bracketIndent = $this->indentOfLine($source, $tokens->list[$open]['offset']);
 
-        $depth = 0;
-        $segment = array();
-        $count = \count($tokens);
-        for ($i = $open + 1; $i < $count; $i++) {
-            $text = $tokens[$i]['text'];
-            $id = $tokens[$i]['id'];
-            if ($id === null && $text === ']' && $depth === 0) {
-                $array->end = $tokens[$i]['offset'];
-                $this->finish($array, $segment);
-                return $array;
+        $interior = \substr($source, $array->start, $array->end - $array->start);
+        if (\strpos($interior, "\n") === false) {
+            if (\trim($interior) !== '') {
+                throw new SchemaShapeException("the '$rootKey' fields array must be written one entry per line");
             }
-            $segment[] = $tokens[$i];
-            if ($id === T_CURLY_OPEN || $id === T_DOLLAR_OPEN_CURLY_BRACES) {
-                $depth++;
-            } elseif ($id === null && ($text === '[' || $text === '(' || $text === '{')) {
-                $depth++;
-            } elseif ($id === null && ($text === ']' || $text === ')' || $text === '}')) {
-                $depth--;
-            } elseif ($id === null && $text === ',' && $depth === 0) {
-                $array->entries[] = $this->entry($segment, true);
-                $segment = array();
+            $array->emptyOnOneLine = true;
+            return $array;
+        }
+
+        $cursor = $this->restOfLine($tokens, $open + 1, $close, $array->start);
+        $this->requireLineEnd($source, $array->start, $cursor, $rootKey);
+        $array->head = \substr($source, $array->start, $cursor[1] - $array->start);
+
+        $i = $cursor[0];
+        $from = $cursor[1];
+        $firstCode = null;
+        $lastCode = null;
+        for (; $i < $close; $i++) {
+            if (!$tokens->isTrivia($i)) {
+                $firstCode = $firstCode === null ? $i : $firstCode;
+                $lastCode = $i;
+            }
+            if ($tokens->is($i, ',') && $tokens->parent[$i] === $open) {
+                $commaEnd = $tokens->list[$i]['offset'] + 1;
+                $cursor = $this->restOfLine($tokens, $i + 1, $close, $commaEnd);
+                $this->requireLineEnd($source, $commaEnd, $cursor, $rootKey);
+                $entry = $this->entry($source, $tokens, $from, $cursor[1], $firstCode);
+                $entry->afterComma = \substr($source, $commaEnd, $cursor[1] - $commaEnd);
+                $array->entries[] = $entry;
+                $from = $cursor[1];
+                $i = $cursor[0] - 1;
+                $firstCode = null;
+                $lastCode = null;
             }
         }
-        return null;
+        if ($firstCode !== null) {
+            // A last entry with no comma after it.
+            $codeEnd = $tokens->list[$lastCode]['offset'] + \strlen($tokens->list[$lastCode]['text']);
+            $cursor = $this->restOfLine($tokens, $lastCode + 1, $close, $codeEnd);
+            $this->requireLineEnd($source, $codeEnd, $cursor, $rootKey);
+            $entry = $this->entry($source, $tokens, $from, $cursor[1], $firstCode);
+            $entry->missingCommaAt = $codeEnd - $from;
+            $entry->afterComma = \substr($source, $codeEnd, $cursor[1] - $codeEnd);
+            $array->entries[] = $entry;
+            $from = $cursor[1];
+        }
+        $array->tail = \substr($source, $from, $array->end - $from);
+        return $array;
     }
 
-    /** The last segment is an entry without a comma, or just the tail before `]`. */
-    private function finish(FieldsArray $array, array $segment)
+    /**
+     * From just after a comma (or the opening bracket), take what else is on that line:
+     * whitespace, a trailing comment, the line ending.
+     *
+     * @return array{0: int, 1: int} Index of the first token not taken, and the offset reached
+     */
+    private function restOfLine(Tokens $tokens, $i, $close, $offset)
     {
-        $hasCode = false;
-        foreach ($segment as $token) {
-            if (!$this->isTrivia($token)) {
-                $hasCode = true;
+        for (; $i < $close; $i++) {
+            $token = $tokens->list[$i];
+            $text = $token['text'];
+            if ($token['id'] === T_WHITESPACE) {
+                $newline = \strpos($text, "\n");
+                if ($newline === false) {
+                    $offset = $token['offset'] + \strlen($text);
+                    continue;
+                }
+                $offset = $token['offset'] + $newline + 1;
+                // The rest of this whitespace, the next line's indentation, stays where it is.
+                return array($newline + 1 === \strlen($text) ? $i + 1 : $i, $offset);
+            }
+            $oneLineComment = $token['id'] === T_COMMENT && \strpos(\rtrim($text, "\r\n"), "\n") === false;
+            if (!$oneLineComment) {
                 break;
             }
+            $offset = $token['offset'] + \strlen($text);
+            if (\substr($text, -1) === "\n") {
+                return array($i + 1, $offset);
+            }
         }
-        if (!$hasCode) {
-            $array->tail = $this->text($segment);
+        return array($i, $offset);
+    }
+
+    /**
+     * @param array{0: int, 1: int} $cursor
+     */
+    private function requireLineEnd($source, $from, array $cursor, $rootKey)
+    {
+        if ($cursor[1] > $from && $source[$cursor[1] - 1] === "\n") {
             return;
         }
-        // Trailing whitespace belongs to the tail, not to the entry.
-        $tail = array();
-        while ($segment && $segment[\count($segment) - 1]['id'] === T_WHITESPACE) {
-            \array_unshift($tail, \array_pop($segment));
-        }
-        $array->entries[] = $this->entry($segment, false);
-        $array->tail = $this->text($tail);
+        throw new SchemaShapeException(
+            "the '$rootKey' fields array must be written one entry per line, with its closing bracket on a line of its own"
+        );
     }
 
-    private function entry(array $segment, $hasComma)
+    private function entry($source, Tokens $tokens, $from, $to, $firstCode)
     {
         $entry = new FieldsEntry();
-        $entry->text = $this->text($segment);
-        $entry->hasComma = $hasComma;
+        $entry->text = \substr($source, $from, $to - $from);
+        $codeOffset = $tokens->list[$firstCode]['offset'];
+        $entry->indent = $this->indentOfLine($source, $codeOffset);
 
-        $lead = '';
-        $markerLead = null;
-        foreach ($segment as $token) {
-            if (!$this->isTrivia($token)) {
-                break;
+        // Owned only if the marker is the last thing before the code, whitespace aside.
+        for ($i = $firstCode - 1; $i >= 0 && $tokens->list[$i]['offset'] >= $from; $i--) {
+            if ($tokens->list[$i]['id'] === T_WHITESPACE) {
+                continue;
             }
-            if ($token['id'] === T_COMMENT && \trim($token['text']) === self::MARKER) {
-                $markerLead = $lead;
+            $isMarker = $tokens->list[$i]['id'] === T_COMMENT && \trim($tokens->list[$i]['text']) === self::MARKER;
+            $lineStart = $this->lineStart($source, $tokens->list[$i]['offset']);
+            if ($isMarker && $lineStart >= $from && \trim(\substr($source, $lineStart, $tokens->list[$i]['offset'] - $lineStart)) === '') {
+                $entry->owned = true;
+                $entry->beforeMarker = \substr($source, $from, $lineStart - $from);
             }
-            $lead .= $token['text'];
+            break;
         }
-        $entry->owned = $markerLead !== null;
-        $entry->lead = $entry->owned ? $markerLead : $lead;
-
-        $newline = \strrpos($lead, "\n");
-        $entry->indent = $newline === false ? '' : \substr($lead, $newline + 1);
-
-        foreach ($segment as $token) {
-            if ($token['id'] === T_CONSTANT_ENCAPSED_STRING) {
-                $entry->name = \substr($token['text'], 1, -1);
-                break;
-            }
-        }
+        $entry->names = $this->names($tokens, $firstCode, $from + \strlen($entry->text));
         return $entry;
     }
 
-    private function text(array $segment)
+    /**
+     * The field name an entry defines: the first string literal, as in
+     * `createField('name', ...)` and `'name' => [...]`, or the value of the `'name'` key
+     * when the entry is itself an array.
+     *
+     * @return string[]
+     */
+    private function names(Tokens $tokens, $firstCode, $endOffset)
     {
-        $text = '';
-        foreach ($segment as $token) {
-            $text .= $token['text'];
+        if ($tokens->is($firstCode, '[')) {
+            for ($i = $firstCode + 1; $i < $tokens->closes[$firstCode]; $i++) {
+                if ($tokens->parent[$i] !== $firstCode || !$tokens->isString($i, 'name')) {
+                    continue;
+                }
+                $arrow = $tokens->nextCode($i);
+                $value = $tokens->isId($arrow, T_DOUBLE_ARROW) ? $tokens->nextCode($arrow) : null;
+                return $tokens->isString($value) ? array($tokens->stringValue($value)) : array();
+            }
+            return array();
         }
-        return $text;
+        for ($i = $firstCode, $n = \count($tokens->list); $i < $n && $tokens->list[$i]['offset'] < $endOffset; $i++) {
+            if ($tokens->isString($i)) {
+                return array($tokens->stringValue($i));
+            }
+        }
+        return array();
     }
 
-    private function lineIndent($source, $offset)
+    private function lineStart($source, $offset)
     {
-        $lineStart = \strrpos(\substr($source, 0, $offset), "\n");
-        $lineStart = $lineStart === false ? 0 : $lineStart + 1;
-        \preg_match('/^[ \t]*/', \substr($source, $lineStart), $m);
+        $newline = \strrpos(\substr($source, 0, $offset), "\n");
+        return $newline === false ? 0 : $newline + 1;
+    }
+
+    /** @return string The whitespace a line starts with, when that is all that precedes $offset on it */
+    private function indentOfLine($source, $offset)
+    {
+        $start = $this->lineStart($source, $offset);
+        \preg_match('/^[ \t]*/', \substr($source, $start, $offset - $start), $m);
         return $m[0];
     }
 }

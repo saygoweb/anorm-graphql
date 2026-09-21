@@ -22,5 +22,7 @@
             <property name="lineLimit" value="150"/>
             <property name="absoluteLineLimit" value="200"/>
         </properties>
+        <!-- These tests hold literal lines of PHP source; wrapping them would hide what is being tested. -->
+        <exclude-pattern>test/tools/Schema/*</exclude-pattern>
     </rule>
 </ruleset>

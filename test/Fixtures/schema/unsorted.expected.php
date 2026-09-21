@@ -2,11 +2,8 @@
 
 namespace App\GraphQL;
 
-use Anorm\GraphQL\GraphQLUtils;
 use Anorm\GraphQL\Type\MangoInput;
-use App\GraphQL\Type\Mango\MangoInput;
 use App\GraphQL\Type\Mango\MangoType;
-use GraphQL\Type\Definition\Type;
 use GraphQL\Type\Schema;
 
 class ApiSchema extends Schema
@@ -18,7 +15,7 @@ class ApiSchema extends Schema
 				'name' => 'Query',
 				'fields' => [
 					// anorm-graphql
-					GraphQLUtils::createListField('mangoList', $this->type(MangoType::class), 'resolveList')
+					\Anorm\GraphQL\GraphQLUtils::createListField('mangoList', $this->type(MangoType::class), 'resolveList')
 					    ->addArgument('query', $this->type(MangoInput::class))
 					    ->build(),
 					GraphQLUtils::createListField('zebraList', $this->type(ZebraType::class), 'resolveList')->build(),
@@ -35,12 +32,12 @@ class ApiSchema extends Schema
 						})
 						->build(),
 					// anorm-graphql
-					GraphQLUtils::createListField('mangoDelete', $this->type(MangoType::class), 'resolveDelete')
-					    ->addArgument('id', Type::nonNull(Type::listOf(Type::nonNull(Type::id()))))
+					\Anorm\GraphQL\GraphQLUtils::createListField('mangoDelete', $this->type(MangoType::class), 'resolveDelete')
+					    ->addArgument('id', \GraphQL\Type\Definition\Type::nonNull(\GraphQL\Type\Definition\Type::listOf(\GraphQL\Type\Definition\Type::nonNull(\GraphQL\Type\Definition\Type::id()))))
 					    ->build(),
 					// anorm-graphql
-					GraphQLUtils::createListField('mangoUpsert', $this->type(MangoType::class), 'resolveUpsert')
-					    ->addArgument('input', Type::nonNull(Type::listOf(Type::nonNull($this->type(MangoInput::class)))))
+					\Anorm\GraphQL\GraphQLUtils::createListField('mangoUpsert', $this->type(MangoType::class), 'resolveUpsert')
+					    ->addArgument('input', \GraphQL\Type\Definition\Type::nonNull(\GraphQL\Type\Definition\Type::listOf(\GraphQL\Type\Definition\Type::nonNull($this->type(\App\GraphQL\Type\Mango\MangoInput::class)))))
 					    ->build(),
 				],
 			]),

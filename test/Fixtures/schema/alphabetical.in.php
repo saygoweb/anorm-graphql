@@ -2,6 +2,8 @@
 
 namespace App\GraphQL;
 
+use Anorm\GraphQL\GraphQLUtils;
+use Anorm\GraphQL\Type\MangoInput;
 use App\GraphQL\Type\Zebra\ZebraType;
 use DI\Container;
 use GraphQL\Type\Definition\ObjectType;

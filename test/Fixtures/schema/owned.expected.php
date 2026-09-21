@@ -4,8 +4,6 @@ namespace App\GraphQL;
 
 use Anorm\GraphQL\GraphQLUtils;
 use Anorm\GraphQL\Type\MangoInput;
-use App\GraphQL\Type\Client\ClientInput;
-use App\GraphQL\Type\Client\ClientType;
 use GraphQL\Type\Definition\Type;
 use GraphQL\Type\Schema;
 
@@ -19,7 +17,7 @@ class ApiSchema extends Schema
                 'fields' => [
 
                     // anorm-graphql
-                    GraphQLUtils::createListField('clientList', $this->type(ClientType::class), 'resolveList')
+                    GraphQLUtils::createListField('clientList', $this->type(\App\GraphQL\Type\Client\ClientType::class), 'resolveList')
                         ->addArgument('query', $this->type(MangoInput::class))
                         ->build(),
                     // anorm-graphql
@@ -31,7 +29,7 @@ class ApiSchema extends Schema
                 'name' => 'Mutation',
                 'fields' => [
                     // anorm-graphql
-                    GraphQLUtils::createListField('clientDelete', $this->type(ClientType::class), 'resolveDelete')
+                    GraphQLUtils::createListField('clientDelete', $this->type(\App\GraphQL\Type\Client\ClientType::class), 'resolveDelete')
                         ->addArgument('id', Type::nonNull(Type::listOf(Type::nonNull(Type::id()))))
                         ->build(),
                     // The marker was removed from this one, so it is the project's now.
