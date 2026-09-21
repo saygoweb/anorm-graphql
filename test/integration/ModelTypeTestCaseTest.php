@@ -3,6 +3,7 @@
 namespace Anorm\GraphQL\Test\Integration;
 
 use Anorm\GraphQL\Test\Fixtures\LegacyWidgetCase;
+use Anorm\GraphQL\Test\Fixtures\PlainWidgetCase;
 use Anorm\GraphQL\Test\TestEnvironment;
 use PHPUnit\Framework\TestCase;
 
@@ -46,6 +47,17 @@ class ModelTypeTestCaseTest extends TestCase
         $this->assertSame(0, $this->rows(), 'nothing may have been written');
     }
 
+    public function testAWriteTheProjectAddsItselfIsGuardedToo(): void
+    {
+        // The generated test file is the project's to extend. A test of theirs that
+        // calls upsert() never goes near testLifecycle(), and must be just as safe.
+        $result = (new LegacyWidgetCase('testAWriteOfTheProjectsOwn'))->run();
+
+        $this->assertSame(1, $result->skippedCount(), 'a mutation on a table that cannot roll back must skip the test');
+        $this->assertSame(0, $result->errorCount() + $result->failureCount());
+        $this->assertSame(0, $this->rows(), 'nothing may have been written');
+    }
+
     public function testAProjectCanAcceptTheConsequences(): void
     {
         LegacyWidgetCase::$allow = true;
@@ -54,6 +66,18 @@ class ModelTypeTestCaseTest extends TestCase
         $this->assertTrue($result->wasSuccessful(), 'with the guard lifted the lifecycle itself must pass');
         $this->assertSame(0, $result->skippedCount());
         $this->assertSame(1, $this->rows(), 'and this is why the guard exists: the rollback did nothing');
+    }
+
+    public function testAWriteTheProjectAddsItselfIsRolledBackOnAnOrdinaryTable(): void
+    {
+        // It never called useDatabase(); running the mutation began the transaction for it.
+        TestEnvironment::pdo()->exec('DELETE FROM `widgets`');
+        $result = (new PlainWidgetCase('testAWriteOfTheProjectsOwn'))->run();
+
+        $this->assertTrue($result->wasSuccessful(), 'an InnoDB table must never be skipped');
+        $this->assertSame(0, $result->skippedCount());
+        $count = (int) TestEnvironment::pdo()->query('SELECT COUNT(*) FROM `widgets`')->fetchColumn();
+        $this->assertSame(0, $count, 'tearDown rolled the write back');
     }
 
     public function testReadingNeedsNoGuard(): void

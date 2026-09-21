@@ -344,9 +344,15 @@ key returns exactly one → upsert with `id` updates in place → delete returns
   So before it writes, the lifecycle test asks MySQL or MariaDB whether the Type's
   table has transactions, and if not it skips itself and says why. Convert the table
   to InnoDB in the test database, or override `allowNonTransactionalTables()` to return
-  `true` where leaving rows behind is acceptable. The check covers the Type's own
-  table only: a parent row you create in `sampleInput()` in some other table is yours
-  to look after, and on another database the check is not made at all.
+  `true` where leaving rows behind is acceptable. The same holds for tests you add
+  yourself: any mutation run through `execute()` or `upsert()` first begins the
+  clean-up transaction and makes this check, so a write of your own is rolled back, or
+  the test is skipped, just as the inherited ones are. What it cannot cover is a write
+  that does not go through them: a model you `write()` directly, or a statement you run
+  on the PDO yourself. Call `useDatabase()` before those, and keep them to tables that
+  can roll back. The check covers the Type's own table only: a parent row you create
+  in `sampleInput()` in some other table is yours to look after, and on another
+  database the check is not made at all.
 - **The models must use the container's PDO.** Cleanup rolls back
   `$container->get(\PDO::class)`. A model that connects some other way writes outside
   that transaction.

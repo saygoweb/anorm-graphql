@@ -75,6 +75,13 @@ class LegacyWidgetCase extends ModelTypeTestCase
         return ['name' => 'name 2'];
     }
 
+    /** As a project might add to its own, once-only test file: a write that bypasses testLifecycle(). */
+    public function testAWriteOfTheProjectsOwn(): void
+    {
+        $rows = $this->upsert([['name' => 'written by the project']]);
+        $this->assertCount(1, $rows);
+    }
+
     protected function allowNonTransactionalTables(): bool
     {
         return self::$allow;

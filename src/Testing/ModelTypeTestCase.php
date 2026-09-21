@@ -177,12 +177,21 @@ abstract class ModelTypeTestCase extends TestCase
 
     /**
      * Run a query and return its data, failing the test on any GraphQL error.
+     * A mutation begins the clean-up transaction first, and is refused (the test is
+     * skipped) on a table that cannot roll back; see requireTransactionalTable().
      *
      * @param array<string, mixed> $variables
      * @return array<string, mixed>
      */
     protected function execute(string $query, array $variables = []): array
     {
+        if (preg_match('/^\s*mutation\b/i', $query) === 1) {
+            // Whoever runs a mutation, the inherited lifecycle test or a test the project
+            // wrote itself, it happens inside the transaction tearDown rolls back, and
+            // only on a table that can roll back.
+            $this->useDatabase();
+            $this->requireTransactionalTable();
+        }
         $result = GraphQL::executeQuery(
             $this->createSchema($this->container),
             $query,
