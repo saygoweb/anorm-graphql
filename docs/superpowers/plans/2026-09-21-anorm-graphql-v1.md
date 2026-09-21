@@ -24,7 +24,7 @@
 
 ## How this plan was prepared, and what that means for you
 
-Every source and test file in this plan was written and **run before the plan was written**: a clean `composer install` on PHP 7.4 resolving webonyx 15.37.2 with no advisory ignored, then `composer ci` green — 173 PHPUnit tests against MariaDB 10.11 with coverage, phpcs clean, phpstan level 5 clean. (An earlier revision of this plan was verified on webonyx 14 with simpod; the no-DB suites of that revision also passed on PHP 8.3. The webonyx 15 revision has not yet been run on 8.3.) The docker port script was dry-run (it produces a script that passes `bash -n` and prints its help), but the stack itself was **not** brought up from it. That is why Task 1 is the one task you should expect to have to debug, and its likeliest trouble is environmental: ports, the image build, the health check. The code blocks are therefore to be **transcribed exactly**, not improved. If a step fails, the likeliest causes, in order, are: a transcription slip, a dependency resolving to a different version than the one verified, or the environment. Diagnose in that order before touching the code's logic.
+Every source and test file in this plan was written and **run before the plan was written**: a clean `composer install` on PHP 7.4 resolving webonyx 15.37.2 with no advisory ignored, then `composer ci` green — 176 PHPUnit tests against MariaDB 10.11 with coverage, phpcs clean, phpstan level 5 clean. (An earlier revision of this plan was verified on webonyx 14 with simpod; the no-DB suites of that revision also passed on PHP 8.3. The webonyx 15 revision has not yet been run on 8.3.) The docker port script was dry-run (it produces a script that passes `bash -n` and prints its help), but the stack itself was **not** brought up from it. That is why Task 1 is the one task you should expect to have to debug, and its likeliest trouble is environmental: ports, the image build, the health check. The code blocks are therefore to be **transcribed exactly**, not improved. If a step fails, the likeliest causes, in order, are: a transcription slip, a dependency resolving to a different version than the one verified, or the environment. Diagnose in that order before touching the code's logic.
 
 TDD still applies to how you work: write the test, watch it fail for the stated reason, then add the implementation. A test that passes before its implementation exists means a step was done out of order.
 
@@ -40,7 +40,7 @@ Validation found and fixed these things, which is why the code differs from a na
 | **Gate A:** DDL inside a mutation commits implicitly; the failed rollback then hid the real error | a failed rollback never replaces the original exception; mutations refuse a model in Anorm's dynamic mode; a release or commit that fails because the transaction had already ended (MySQL 1305, or PHP 8's "no active transaction") is reported as an implicit commit with the driver error as its cause, and any other failure there (lost connection, deadlock) is rethrown untouched. With no outer transaction PHP 7.4's PDO cannot detect an implicit commit at all |
 | **Gate B:** the first schema editor scanned freely for `'query' =>`, compared imports by class rather than by the short name PHP binds, split entries at commas, and its tests checked syntax only. Result: 7 Critical findings, among them a committed golden file that did not compile, entries written into an unrelated constant, mutations landing in the Query array, and PHP 8 attributes unbalancing the brackets | the editor's internals were rewritten: `Tokens` (version-neutral depth and bracket matching), a locator anchored to `'query' => new ObjectType([ ... 'fields' => [ ... ] ])` with a line-based entry model, and `ImportTable`, which imports a class only when its short name is free (a name the file merely uses unqualified counts as taken) and otherwise writes the fully qualified name. Tests compile their output with `php -l` and run on PHP 7.4 and 8.3. A second review of the rewrite found two more Criticals, each on one PHP version only (8.x: the first part of `Type\Action\ActionType` is inside a single token and was not seen as a name in use; 7.4: a `use` split across lines bound nothing), now fixed, with an `unsure` mode that imports nothing and fully qualifies everything whenever the imports cannot be read with confidence |
 | **Gate C:** run for real against throwaway directories, the generator could be made to clobber a hand-written file that merely quoted the generated header, write outside its output directory through a symbolic link, emit unparseable PHP for an entity or namespace that is a PHP reserved word while reporting `written`, let two models with one entity name share files, and fall back to the DEFAULT output folder on a misspelt option | the header must be the first thing after `<?php`; `FileWriter` is told the directories it may write in, and refuses anything outside them or through a link; reserved namespaces are exit 2, reserved entities are skipped, and an entity's code is all parsed before any of it is written; duplicate entities are both skipped, naming each other; an unexpected argument is exit 2. The first reserved-word list was written from memory and over-rejected (`Parent`, `Match`, `Object`, `String`); it is now the 68 words PHP 7.4.33 was measured to refuse as a namespace segment. Files and schema entries of an entity that can no longer be produced are reported, even when no entity of the run can be. An empty `sampleUpdate()` makes the inherited test report itself incomplete instead of passing in silence |
-| **Gate D:** generated tests clean up by rolling back, which does nothing on a table whose engine has no transactions (MyISAM, as FrontAccounting has historically used): the lifecycle test would have left permanent rows in a consumer's real database, while the README said running against real data "costs nothing" | before it writes, `testLifecycle` asks MySQL/MariaDB whether the Type's table has transactions and, if not, skips itself saying why; `allowNonTransactionalTables()` opts in. `ModelType::tableName()` exists for that check |
+| **Gate D:** generated tests clean up by rolling back, which does nothing on a table whose engine has no transactions (MyISAM, as FrontAccounting has historically used): the lifecycle test would have left permanent rows in a consumer's real database, while the README said running against real data "costs nothing" | before it writes, `testLifecycle` asks MySQL/MariaDB whether the Type's table has transactions and, if not, skips itself saying why; `allowNonTransactionalTables()` opts in. `ModelType::tableName()` exists for that check. The guard first sat in `testLifecycle()` only, and a test a project adds itself went round it; it now lives in `execute()`, which begins the clean-up transaction and makes the check before ANY mutation, recognised by parsing the document (a regex on its text was bypassed by a leading comment, a BOM, or a fragment) |
 | Anorm 3.2.1 binds the key in `read()` and `write()` (advisory GHSA-xc47-9hw7-px38) | this package requires `saygoweb/anorm ^3.2.1`, so it cannot be installed beside a vulnerable Anorm; `ModelType` keeps its own bound, scoped query regardless, because that is also what implements `scope()` |
 | FrontAccounting's central tables are "fixed discriminator + single key" (`sales_orders.trans_type`, `debtor_trans.type`) | user-approved addition: `ModelType::scope()`, applied as bound WHERE conditions (not via the selector, since the discriminator is usually named `type`). Generator support for it is v1.1 |
 | `--only` made the schema editor call every other entity's entries orphans | `SchemaEditor::edit()` takes the full list of known entities |
@@ -7479,7 +7479,7 @@ Confirm against spec §5 and §6, with file and line:
 
 **Files:**
 - Create: `src/Testing/ModelTypeTestCase.php`
-- Create: `test/Fixtures/OtherModel/LegacyWidgetModel.php`, `test/Fixtures/Type/LegacyWidgetType.php`, `test/Fixtures/Type/LegacyWidgetInput.php`, `test/Fixtures/LegacyWidgetCase.php` (a Type over a MyISAM table, and a project-style test of it)
+- Create: `test/Fixtures/OtherModel/LegacyWidgetModel.php`, `test/Fixtures/Type/LegacyWidgetType.php`, `test/Fixtures/Type/LegacyWidgetInput.php`, `test/Fixtures/LegacyWidgetCase.php` (a Type over a MyISAM table, and a project-style test of it), `test/Fixtures/PlainWidgetCase.php` (the same over an ordinary InnoDB table)
 - Test: `test/integration/EndToEndTest.php`, `test/integration/ModelTypeTestCaseTest.php`
 
 **Interfaces:**
@@ -7487,7 +7487,7 @@ Confirm against spec §5 and §6, with file and line:
 - Produces, on `abstract class Anorm\GraphQL\Testing\ModelTypeTestCase extends PHPUnit\Framework\TestCase`:
   - abstract: `createContainer(): Container`, `createSchema(Container $container): Schema`, `typeClass(): string`, `inputClass(): ?string`, `entityName(): string`, `expectedFieldTypes(): array`
   - overridable: `sampleInput(): array`, `sampleUpdate(): array`, `keyField(): string`, `allowNonTransactionalTables(): bool` (default false: the lifecycle test skips itself rather than write to a table that cannot roll back)
-  - helpers for a project's own tests: `execute(string $query, array $variables = []): array`, `useDatabase(): void`, `listAll()`, `listWhere(array $selector)`, `upsert(array $inputs)`
+  - helpers for a project's own tests (a mutation run through them begins the clean-up transaction first, and is refused, skipping the test, on a table that cannot roll back): `execute(string $query, array $variables = []): array`, `useDatabase(): void`, `listAll()`, `listWhere(array $selector)`, `upsert(array $inputs)`
   - inherited tests: `testTypeHasTheExpectedFields`, `testInputMirrorsTheType`, `testListReturnsAList`, `testLifecycle` (which, when `sampleUpdate()` is empty, asserts create, view and delete and then marks itself INCOMPLETE rather than pass the update off as tested)
 
 The end-to-end test runs the generated code in **child processes**. Each test generates afresh, and a second `require` of a regenerated class in the same process would be a fatal "cannot redeclare".
@@ -7814,9 +7814,107 @@ class LegacyWidgetCase extends ModelTypeTestCase
         return ['name' => 'name 2'];
     }
 
+    /** As a project might add to its own, once-only test file: a write that bypasses testLifecycle(). */
+    public function testAWriteOfTheProjectsOwn(): void
+    {
+        $rows = $this->upsert([['name' => 'written by the project']]);
+        $this->assertCount(1, $rows);
+    }
+
+    /**
+     * The same, written the way people write GraphQL by hand, and saved the way some
+     * editors save it: a byte order mark, a comment, a fragment, then a named operation.
+     */
+    public function testAWriteBehindACommentAndAName(): void
+    {
+        $document = "\xEF\xBB\xBF# create a legacy widget\n\nfragment Bits on LegacyWidgetType { id name }\n\n"
+            . 'mutation CreateOne($input: [LegacyWidgetInput!]!) { legacyWidgetUpsert(input: $input) { ...Bits } }';
+        $data = $this->execute($document, ['input' => [['name' => 'behind a comment']]]);
+        $this->assertCount(1, $data['legacyWidgetUpsert']);
+    }
+
     protected function allowNonTransactionalTables(): bool
     {
         return self::$allow;
+    }
+}
+```
+
+`test/Fixtures/PlainWidgetCase.php`:
+
+```php
+<?php
+
+namespace Anorm\GraphQL\Test\Fixtures;
+
+use Anorm\GraphQL\Builder\FieldBuilder;
+use Anorm\GraphQL\Builder\ObjectBuilder;
+use Anorm\GraphQL\GraphQLUtils;
+use Anorm\GraphQL\Test\Fixtures\Type\RecordingWidgetType;
+use Anorm\GraphQL\Test\TestEnvironment;
+use Anorm\GraphQL\Testing\ModelTypeTestCase;
+use DI\Container;
+use GraphQL\Type\Definition\InputObjectType;
+use GraphQL\Type\Definition\ObjectType;
+use GraphQL\Type\Definition\Type;
+use GraphQL\Type\Schema;
+
+/**
+ * A project's test of a Type over an ordinary InnoDB table, with a write of the
+ * project's own that never calls useDatabase(). Not named *Test: run by hand.
+ */
+class PlainWidgetCase extends ModelTypeTestCase
+{
+    protected function createContainer(): Container
+    {
+        return TestEnvironment::container();
+    }
+
+    protected function createSchema(Container $container): Schema
+    {
+        $type = $container->get(RecordingWidgetType::class);
+        $input = new InputObjectType(ObjectBuilder::create('WidgetInput')->setFields([
+            FieldBuilder::create('id', Type::id())->build(),
+            FieldBuilder::create('name', Type::string())->build(),
+        ])->build());
+        return new Schema([
+            'query' => new ObjectType(['name' => 'Query', 'fields' => [
+                GraphQLUtils::createListField('widgetList', $type, 'resolveList')->build(),
+            ]]),
+            'mutation' => new ObjectType(['name' => 'Mutation', 'fields' => [
+                GraphQLUtils::createListField('widgetUpsert', $type, 'resolveUpsert')
+                    ->addArgument('input', Type::nonNull(Type::listOf(Type::nonNull($input))))->build(),
+            ]]),
+        ]);
+    }
+
+    protected function typeClass(): string
+    {
+        return RecordingWidgetType::class;
+    }
+
+    protected function inputClass(): ?string
+    {
+        return null;
+    }
+
+    protected function entityName(): string
+    {
+        return 'widget';
+    }
+
+    protected function expectedFieldTypes(): array
+    {
+        return ['id' => 'ID!', 'name' => 'String'];
+    }
+
+    public function testAWriteOfTheProjectsOwn(): void
+    {
+        $data = $this->execute(
+            'mutation ($input: [WidgetInput!]!) { widgetUpsert(input: $input) { id name } }',
+            ['input' => [['name' => 'written by the project']]]
+        );
+        $this->assertSame('written by the project', $data['widgetUpsert'][0]['name']);
     }
 }
 ```
@@ -7829,6 +7927,7 @@ class LegacyWidgetCase extends ModelTypeTestCase
 namespace Anorm\GraphQL\Test\Integration;
 
 use Anorm\GraphQL\Test\Fixtures\LegacyWidgetCase;
+use Anorm\GraphQL\Test\Fixtures\PlainWidgetCase;
 use Anorm\GraphQL\Test\TestEnvironment;
 use PHPUnit\Framework\TestCase;
 
@@ -7872,6 +7971,26 @@ class ModelTypeTestCaseTest extends TestCase
         $this->assertSame(0, $this->rows(), 'nothing may have been written');
     }
 
+    public function testAWriteTheProjectAddsItselfIsGuardedToo(): void
+    {
+        // The generated test file is the project's to extend. A test of theirs that
+        // calls upsert() never goes near testLifecycle(), and must be just as safe.
+        $result = (new LegacyWidgetCase('testAWriteOfTheProjectsOwn'))->run();
+
+        $this->assertSame(1, $result->skippedCount(), 'a mutation on a table that cannot roll back must skip the test');
+        $this->assertSame(0, $result->errorCount() + $result->failureCount());
+        $this->assertSame(0, $this->rows(), 'nothing may have been written');
+    }
+
+    public function testAMutationIsRecognisedHoweverTheDocumentOpens(): void
+    {
+        $result = (new LegacyWidgetCase('testAWriteBehindACommentAndAName'))->run();
+
+        $this->assertSame(1, $result->skippedCount(), 'a comment, a fragment or a name before the mutation must not hide it');
+        $this->assertSame(0, $result->errorCount() + $result->failureCount());
+        $this->assertSame(0, $this->rows(), 'nothing may have been written');
+    }
+
     public function testAProjectCanAcceptTheConsequences(): void
     {
         LegacyWidgetCase::$allow = true;
@@ -7880,6 +7999,18 @@ class ModelTypeTestCaseTest extends TestCase
         $this->assertTrue($result->wasSuccessful(), 'with the guard lifted the lifecycle itself must pass');
         $this->assertSame(0, $result->skippedCount());
         $this->assertSame(1, $this->rows(), 'and this is why the guard exists: the rollback did nothing');
+    }
+
+    public function testAWriteTheProjectAddsItselfIsRolledBackOnAnOrdinaryTable(): void
+    {
+        // It never called useDatabase(); running the mutation began the transaction for it.
+        TestEnvironment::pdo()->exec('DELETE FROM `widgets`');
+        $result = (new PlainWidgetCase('testAWriteOfTheProjectsOwn'))->run();
+
+        $this->assertTrue($result->wasSuccessful(), 'an InnoDB table must never be skipped');
+        $this->assertSame(0, $result->skippedCount());
+        $count = (int) TestEnvironment::pdo()->query('SELECT COUNT(*) FROM `widgets`')->fetchColumn();
+        $this->assertSame(0, $count, 'tearDown rolled the write back');
     }
 
     public function testReadingNeedsNoGuard(): void
@@ -7909,6 +8040,8 @@ use Anorm\GraphQL\ModelType;
 use DI\Container;
 use GraphQL\Error\DebugFlag;
 use GraphQL\GraphQL;
+use GraphQL\Language\AST\OperationDefinitionNode;
+use GraphQL\Language\Parser;
 use GraphQL\Type\Schema;
 use PHPUnit\Framework\TestCase;
 
@@ -8080,12 +8213,21 @@ abstract class ModelTypeTestCase extends TestCase
 
     /**
      * Run a query and return its data, failing the test on any GraphQL error.
+     * A mutation begins the clean-up transaction first, and is refused (the test is
+     * skipped) on a table that cannot roll back; see requireTransactionalTable().
      *
      * @param array<string, mixed> $variables
      * @return array<string, mixed>
      */
     protected function execute(string $query, array $variables = []): array
     {
+        if ($this->hasMutation($query)) {
+            // Whoever runs a mutation, the inherited lifecycle test or a test the project
+            // wrote itself, it happens inside the transaction tearDown rolls back, and
+            // only on a table that can roll back.
+            $this->useDatabase();
+            $this->requireTransactionalTable();
+        }
         $result = GraphQL::executeQuery(
             $this->createSchema($this->container),
             $query,
@@ -8128,6 +8270,26 @@ abstract class ModelTypeTestCase extends TestCase
                 . 'override allowNonTransactionalTables() if leaving rows behind is acceptable there.'
             );
         }
+    }
+
+    /**
+     * Whether a GraphQL document holds a mutation. Asked of the parser, not of the text:
+     * a document may open with a comment, a fragment, or another operation.
+     */
+    private function hasMutation(string $query): bool
+    {
+        try {
+            $document = Parser::parse($query, ['noLocation' => true]);
+        } catch (\Throwable $e) {
+            // Not GraphQL at all. Executing it will say so; nothing will be written.
+            return false;
+        }
+        foreach ($document->definitions as $definition) {
+            if ($definition instanceof OperationDefinitionNode && $definition->operation === 'mutation') {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Begin the transaction that tearDown rolls back. */
@@ -8184,12 +8346,12 @@ abstract class ModelTypeTestCase extends TestCase
 - [ ] **Step 4: Run the whole integration suite**
 
 Run: `docker/anorm-graphql test --testsuite integration`
-Expected: `OK (48 tests, ...)`
+Expected: `OK (51 tests, ...)`
 
 - [ ] **Step 5: Run everything, with quality**
 
 Run: `docker/anorm-graphql ci`
-Expected: all suites pass (173 tests), phpcs clean, phpstan `[OK] No errors`.
+Expected: all suites pass (176 tests), phpcs clean, phpstan `[OK] No errors`.
 
 - [ ] **Step 6: Commit**
 

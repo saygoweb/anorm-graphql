@@ -688,6 +688,12 @@ Decisions:
    A project may override `allowNonTransactionalTables()` to accept the consequences.
    The check covers the Type's own table, on MySQL and MariaDB. `ModelType::tableName()`
    exists so that the test case can ask.
+   The check is made in `execute()`, before any mutation, together with beginning the
+   clean-up transaction, so that a test a project adds to its own once-only test file is
+   as safe as the inherited ones. A mutation is recognised by parsing the document; a
+   regex on its text was bypassed by a leading comment, a byte order mark, or a fragment.
+   A write that does not go through `execute()` or `upsert()` (a model written directly,
+   a statement run on the PDO) is the project's to look after.
 3. **Cleanup is by rollback, not truncation.** `setUp` begins a transaction on the
    container's PDO and `tearDown` rolls it back. `GraphQLCudTestCase` truncates
    tables, which is dangerous if a test configuration ever points at a real
