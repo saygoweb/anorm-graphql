@@ -6,7 +6,7 @@
 
 **Architecture:** A thin generated base class per entity (field list and model class only) sits over a runtime `ModelType` that holds all list / upsert / delete logic. Generated bases are overwritten every run; a once-only subclass belongs to the project. A tokenizer-based editor maintains only the marked entries of a hand-written `ApiSchema.php`.
 
-**Tech Stack:** PHP `^7.4 || ^8.0`, `saygoweb/anorm ^3.2`, `webonyx/graphql-php ^15.32.3`, `php-di/php-di ^6.0`, `wp-cli/php-cli-tools`, PHPUnit 9.6, phpcs (PSR-12), phpstan level 5, Docker (PHP 7.4 CLI + MariaDB 10.11).
+**Tech Stack:** PHP `^7.4 || ^8.0`, `saygoweb/anorm ^3.2.1`, `webonyx/graphql-php ^15.32.3`, `php-di/php-di ^6.0`, `wp-cli/php-cli-tools`, PHPUnit 9.6, phpcs (PSR-12), phpstan level 5, Docker (PHP 7.4 CLI + MariaDB 10.11).
 
 **Spec:** `docs/superpowers/specs/2026-09-21-anorm-graphql-design.md`. Read it before starting any task.
 
@@ -24,7 +24,7 @@
 
 ## How this plan was prepared, and what that means for you
 
-Every source and test file in this plan was written and **run before the plan was written**: a clean `composer install` on PHP 7.4 resolving webonyx 15.37.2 with no advisory ignored, then `composer ci` green — 92 PHPUnit tests against MariaDB 10.11 with coverage, phpcs clean, phpstan level 5 clean. (An earlier revision of this plan was verified on webonyx 14 with simpod; the no-DB suites of that revision also passed on PHP 8.3. The webonyx 15 revision has not yet been run on 8.3.) The docker port script was dry-run (it produces a script that passes `bash -n` and prints its help), but the stack itself was **not** brought up from it. That is why Task 1 is the one task you should expect to have to debug, and its likeliest trouble is environmental: ports, the image build, the health check. The code blocks are therefore to be **transcribed exactly**, not improved. If a step fails, the likeliest causes, in order, are: a transcription slip, a dependency resolving to a different version than the one verified, or the environment. Diagnose in that order before touching the code's logic.
+Every source and test file in this plan was written and **run before the plan was written**: a clean `composer install` on PHP 7.4 resolving webonyx 15.37.2 with no advisory ignored, then `composer ci` green — 144 PHPUnit tests against MariaDB 10.11 with coverage, phpcs clean, phpstan level 5 clean. (An earlier revision of this plan was verified on webonyx 14 with simpod; the no-DB suites of that revision also passed on PHP 8.3. The webonyx 15 revision has not yet been run on 8.3.) The docker port script was dry-run (it produces a script that passes `bash -n` and prints its help), but the stack itself was **not** brought up from it. That is why Task 1 is the one task you should expect to have to debug, and its likeliest trouble is environmental: ports, the image build, the health check. The code blocks are therefore to be **transcribed exactly**, not improved. If a step fails, the likeliest causes, in order, are: a transcription slip, a dependency resolving to a different version than the one verified, or the environment. Diagnose in that order before touching the code's logic.
 
 TDD still applies to how you work: write the test, watch it fail for the stated reason, then add the implementation. A test that passes before its implementation exists means a step was done out of order.
 
@@ -38,6 +38,8 @@ Validation found and fixed these things, which is why the code differs from a na
 | **Gate A:** `json_decode(..., true)` turns a key like `"2"` into an int, which slipped past the whitelist | the selector is decoded as objects for validation, so an object's properties and a list's positions stay distinct |
 | **Gate A:** Anorm's parser reads unprefixed words (`type`, `size`, `in`, ...) as operators, and most parser errors were uncaught | `ModelType` drives `MangoQueryParser` itself and turns its errors into `UserError`; a field with an operator-word name is refused in a selector, with the reason |
 | **Gate A:** DDL inside a mutation commits implicitly; the failed rollback then hid the real error | a failed rollback never replaces the original exception; mutations refuse a model in Anorm's dynamic mode; a release or commit that fails because the transaction had already ended (MySQL 1305, or PHP 8's "no active transaction") is reported as an implicit commit with the driver error as its cause, and any other failure there (lost connection, deadlock) is rethrown untouched. With no outer transaction PHP 7.4's PDO cannot detect an implicit commit at all |
+| **Gate B:** the first schema editor scanned freely for `'query' =>`, compared imports by class rather than by the short name PHP binds, split entries at commas, and its tests checked syntax only. Result: 7 Critical findings, among them a committed golden file that did not compile, entries written into an unrelated constant, mutations landing in the Query array, and PHP 8 attributes unbalancing the brackets | the editor's internals were rewritten: `Tokens` (version-neutral depth and bracket matching), a locator anchored to `'query' => new ObjectType([ ... 'fields' => [ ... ] ])` with a line-based entry model, and `ImportTable`, which imports a class only when its short name is free (a name the file merely uses unqualified counts as taken) and otherwise writes the fully qualified name. Tests compile their output with `php -l` and run on PHP 7.4 and 8.3. A second review of the rewrite found two more Criticals, each on one PHP version only (8.x: the first part of `Type\Action\ActionType` is inside a single token and was not seen as a name in use; 7.4: a `use` split across lines bound nothing), now fixed, with an `unsure` mode that imports nothing and fully qualifies everything whenever the imports cannot be read with confidence |
+| Anorm 3.2.1 binds the key in `read()` and `write()` (advisory GHSA-xc47-9hw7-px38) | this package requires `saygoweb/anorm ^3.2.1`, so it cannot be installed beside a vulnerable Anorm; `ModelType` keeps its own bound, scoped query regardless, because that is also what implements `scope()` |
 | FrontAccounting's central tables are "fixed discriminator + single key" (`sales_orders.trans_type`, `debtor_trans.type`) | user-approved addition: `ModelType::scope()`, applied as bound WHERE conditions (not via the selector, since the discriminator is usually named `type`). Generator support for it is v1.1 |
 | `--only` made the schema editor call every other entity's entries orphans | `SchemaEditor::edit()` takes the full list of known entities |
 | A model may declare relationship, array and model-typed properties | `TypeInfoBuilder` leaves them out of the fields |
@@ -105,6 +107,9 @@ tools/src/                             Anorm\GraphQL\Tools\  (generator)
   Writer/InputWriter.php               once-only Input                          Task 5
   Writer/TestWriter.php                once-only per-entity test                Task 5
   Writer/TestCaseWriter.php            once-only project TestCase               Task 5
+  Schema/SchemaShapeException.php      "not a shape I am sure of"              Task 6
+  Schema/Tokens.php                    tokens, offsets, depths, brackets        Task 6
+  Schema/ImportTable.php               what `use` binds; import or qualify      Task 6
   Schema/FieldsEntry.php               one entry of a fields array              Task 6
   Schema/FieldsArray.php               one fields array, split into entries     Task 6
   Schema/FieldsArrayLocator.php        tokenizer: find and split                Task 6
@@ -117,6 +122,7 @@ tools/src/                             Anorm\GraphQL\Tools\  (generator)
 test/
   TestEnvironment.php                  the integration database                 Task 1
   TempDir.php                          scratch directory trait                  Task 7
+  SchemaProbe.php                      shared harness of the schema tests       Task 6
   Fixtures/Model/                      WidgetModel, OwnerModel, LedgerLineModel Task 3, 4
   Fixtures/OtherModel/                 GroupModel, OtherGroupModel              Task 4
   Fixtures/Type/                       ResolvingType, RecordingWidgetType       Task 2, 3
@@ -256,7 +262,7 @@ Expected: no output from either.
     ],
     "require": {
         "php": "^7.4 || ^8.0",
-        "saygoweb/anorm": "^3.2",
+        "saygoweb/anorm": "^3.2.1",
         "webonyx/graphql-php": "^15.32.3",
         "php-di/php-di": "^6.0",
         "wp-cli/php-cli-tools": "^0.11.10"
@@ -394,6 +400,8 @@ Expected: no output from either.
             <property name="lineLimit" value="150"/>
             <property name="absoluteLineLimit" value="200"/>
         </properties>
+        <!-- These tests hold literal lines of PHP source; wrapping them would hide what is being tested. -->
+        <exclude-pattern>test/tools/Schema/*</exclude-pattern>
     </rule>
 </ruleset>
 ```
@@ -3503,19 +3511,21 @@ git commit -m "feat: writers for Type, Input and test files"
 **Model: sonnet.**
 
 **Files:**
-- Create: `tools/src/Schema/FieldsEntry.php`, `FieldsArray.php`, `FieldsArrayLocator.php`, `SchemaEditResult.php`, `SchemaEditor.php`, `SchemaScaffolder.php`
+- Create: `tools/src/Schema/SchemaShapeException.php`, `Tokens.php`, `ImportTable.php`, `FieldsEntry.php`, `FieldsArray.php`, `FieldsArrayLocator.php`, `SchemaEditResult.php`, `SchemaEditor.php`, `SchemaScaffolder.php`
+- Create: `test/SchemaProbe.php`; modify `phpcs.xml` (line-length sniff skips `test/tools/Schema/*`)
 - Create: `test/Fixtures/schema/alphabetical.in.php`, `alphabetical.expected.php`, `unsorted.in.php`, `unsorted.expected.php`, `owned.in.php`, `owned.expected.php`, `unparseable.in.php`
-- Test: `test/tools/Schema/SchemaEditorTest.php`
+- Test: `test/tools/Schema/SchemaEditorTest.php`, `test/tools/Schema/SchemaEditorShapesTest.php`
 
 **Interfaces:**
 - Consumes: `TypeInfo` (`$entity`, `$readOnly`, `fieldPrefix()`).
 - Produces:
   - `SchemaEditor::__construct($typeNamespace)`
-  - `SchemaEditor->edit($source, array $infos, array $knownEntities = array()): SchemaEditResult` — `$knownEntities` is every entity name the models produce, including any this run leaves out
-  - `SchemaEditor->entriesFor(TypeInfo $info): array` — `['query' => [name => lines], 'mutation' => [name => lines]]`
-  - `SchemaEditResult` with public `$source`, `$failed`, `$messages` (string[]), `$paste` (string[])
+  - `SchemaEditor->edit($source, array $infos, array $knownEntities): SchemaEditResult` — `$knownEntities` is REQUIRED: every entity name the models produce, including any this run leaves out
+  - `SchemaEditor->entryLines($kind, TypeInfo $info, callable $name): string[]` — `$kind` is `'List'`, `'Delete'` or `'Upsert'`; `$name` turns a fully qualified class name into the text to write
+  - `SchemaEditResult` with public `$source`, `$failed`, `$messages` (string[]), `$paste` (`['query' => string[], 'mutation' => string[]]`)
   - `SchemaScaffolder->render($namespace, $className = 'ApiSchema'): string`
-  - `FieldsArrayLocator::MARKER` = `'// anorm-graphql'`; `->locate($source, $rootKey): ?FieldsArray`
+  - `FieldsArrayLocator::MARKER` = `'// anorm-graphql'`; `->locate($source, Tokens $tokens, $rootKey): ?FieldsArray`, throwing `SchemaShapeException` for a shape it is not sure of
+  - `new Tokens($source)`; `new ImportTable($source, Tokens $tokens)`, `->resolve($fqcn): string`, `->splices($eol): array`
 
 `unsorted.in.php` is indented with **tabs**. Make sure your editor keeps them; the test asserts that inserted entries copy them.
 
@@ -3530,6 +3540,8 @@ As in Task 5, the `.expected.php` files are the specification. Write them from t
 
 namespace App\GraphQL;
 
+use Anorm\GraphQL\GraphQLUtils;
+use Anorm\GraphQL\Type\MangoInput;
 use App\GraphQL\Type\Zebra\ZebraType;
 use DI\Container;
 use GraphQL\Type\Definition\ObjectType;
@@ -3696,11 +3708,8 @@ class ApiSchema extends Schema
 
 namespace App\GraphQL;
 
-use Anorm\GraphQL\GraphQLUtils;
 use Anorm\GraphQL\Type\MangoInput;
-use App\GraphQL\Type\Mango\MangoInput;
 use App\GraphQL\Type\Mango\MangoType;
-use GraphQL\Type\Definition\Type;
 use GraphQL\Type\Schema;
 
 class ApiSchema extends Schema
@@ -3712,7 +3721,7 @@ class ApiSchema extends Schema
 				'name' => 'Query',
 				'fields' => [
 					// anorm-graphql
-					GraphQLUtils::createListField('mangoList', $this->type(MangoType::class), 'resolveList')
+					\Anorm\GraphQL\GraphQLUtils::createListField('mangoList', $this->type(MangoType::class), 'resolveList')
 					    ->addArgument('query', $this->type(MangoInput::class))
 					    ->build(),
 					GraphQLUtils::createListField('zebraList', $this->type(ZebraType::class), 'resolveList')->build(),
@@ -3729,12 +3738,12 @@ class ApiSchema extends Schema
 						})
 						->build(),
 					// anorm-graphql
-					GraphQLUtils::createListField('mangoDelete', $this->type(MangoType::class), 'resolveDelete')
-					    ->addArgument('id', Type::nonNull(Type::listOf(Type::nonNull(Type::id()))))
+					\Anorm\GraphQL\GraphQLUtils::createListField('mangoDelete', $this->type(MangoType::class), 'resolveDelete')
+					    ->addArgument('id', \GraphQL\Type\Definition\Type::nonNull(\GraphQL\Type\Definition\Type::listOf(\GraphQL\Type\Definition\Type::nonNull(\GraphQL\Type\Definition\Type::id()))))
 					    ->build(),
 					// anorm-graphql
-					GraphQLUtils::createListField('mangoUpsert', $this->type(MangoType::class), 'resolveUpsert')
-					    ->addArgument('input', Type::nonNull(Type::listOf(Type::nonNull($this->type(MangoInput::class)))))
+					\Anorm\GraphQL\GraphQLUtils::createListField('mangoUpsert', $this->type(MangoType::class), 'resolveUpsert')
+					    ->addArgument('input', \GraphQL\Type\Definition\Type::nonNull(\GraphQL\Type\Definition\Type::listOf(\GraphQL\Type\Definition\Type::nonNull($this->type(\App\GraphQL\Type\Mango\MangoInput::class)))))
 					    ->build(),
 				],
 			]),
@@ -3792,8 +3801,6 @@ namespace App\GraphQL;
 
 use Anorm\GraphQL\GraphQLUtils;
 use Anorm\GraphQL\Type\MangoInput;
-use App\GraphQL\Type\Client\ClientInput;
-use App\GraphQL\Type\Client\ClientType;
 use GraphQL\Type\Definition\Type;
 use GraphQL\Type\Schema;
 
@@ -3807,7 +3814,7 @@ class ApiSchema extends Schema
                 'fields' => [
 
                     // anorm-graphql
-                    GraphQLUtils::createListField('clientList', $this->type(ClientType::class), 'resolveList')
+                    GraphQLUtils::createListField('clientList', $this->type(\App\GraphQL\Type\Client\ClientType::class), 'resolveList')
                         ->addArgument('query', $this->type(MangoInput::class))
                         ->build(),
                     // anorm-graphql
@@ -3819,7 +3826,7 @@ class ApiSchema extends Schema
                 'name' => 'Mutation',
                 'fields' => [
                     // anorm-graphql
-                    GraphQLUtils::createListField('clientDelete', $this->type(ClientType::class), 'resolveDelete')
+                    GraphQLUtils::createListField('clientDelete', $this->type(\App\GraphQL\Type\Client\ClientType::class), 'resolveDelete')
                         ->addArgument('id', Type::nonNull(Type::listOf(Type::nonNull(Type::id()))))
                         ->build(),
                     // The marker was removed from this one, so it is the project's now.
@@ -3855,27 +3862,27 @@ class ApiSchema extends Schema
 
 - [ ] **Step 2: Write the failing test**
 
-`test/tools/Schema/SchemaEditorTest.php`:
+`test/SchemaProbe.php` (in `test/`, not `test/tools/Schema/`, so that PSR-4 finds it as `Anorm\GraphQL\Test\SchemaProbe`):
 
 ```php
 <?php
 
-namespace Anorm\GraphQL\Test\Tools\Schema;
+namespace Anorm\GraphQL\Test;
 
 use Anorm\GraphQL\Tools\Schema\SchemaEditor;
-use Anorm\GraphQL\Tools\Schema\SchemaScaffolder;
+use Anorm\GraphQL\Tools\Schema\SchemaEditResult;
 use Anorm\GraphQL\Tools\TypeInfo;
 use PHPUnit\Framework\TestCase;
 
 /**
- * SchemaEditor is the only part of the tool that edits hand-written code, so each
- * case is a whole file in, a whole file out: test/Fixtures/schema/<case>.in.php and
- * <case>.expected.php. To accept an intended change run with UPDATE_GOLDEN=1 and
- * review the diff in git.
+ * What the schema editor tests share: building a schema file around a fields array,
+ * running the editor, and the checks every successful edit must pass.
  */
-class SchemaEditorTest extends TestCase
+abstract class SchemaProbe extends TestCase
 {
-    private function info(string $entity, bool $readOnly = false): TypeInfo
+    protected const HEADER = "<?php\n\nnamespace App\\GraphQL;\n\nuse GraphQL\\Type\\Schema;\n";
+
+    protected function info(string $entity, bool $readOnly = false): TypeInfo
     {
         $info = new TypeInfo();
         $info->entity = $entity;
@@ -3883,54 +3890,183 @@ class SchemaEditorTest extends TestCase
         return $info;
     }
 
+    /**
+     * A schema file. $query and $mutation are the inside of each fields array, already
+     * indented by 20 spaces and ending in a newline; '' is an empty array on one line.
+     */
+    protected function schema(string $query, string $mutation = '', string $header = self::HEADER, string $classBody = ''): string
+    {
+        $fields = function (string $inside): string {
+            return $inside === '' ? '[]' : "[\n" . $inside . '                ]';
+        };
+        return $header . "\nclass ApiSchema extends Schema\n{\n" . $classBody
+            . "    public function __construct(\$context)\n    {\n        parent::__construct([\n"
+            . "            'query' => new ObjectType([\n                'name' => 'Query',\n"
+            . "                'fields' => " . $fields($query) . ",\n            ]),\n"
+            . "            'mutation' => new ObjectType([\n                'name' => 'Mutation',\n"
+            . "                'fields' => " . $fields($mutation) . ",\n            ]),\n"
+            . "        ]);\n    }\n}\n";
+    }
+
+    protected function entry(string $name, string $suffix = ','): string
+    {
+        return "                    \$this->handWritten('$name', \$this->type(X::class), 'r')->build()$suffix\n";
+    }
+
+    /**
+     * @param TypeInfo[] $infos
+     * @param string[]|null $known Defaults to the entities of $infos
+     */
+    protected function edit(string $source, array $infos, ?array $known = null): SchemaEditResult
+    {
+        if ($known === null) {
+            $known = array_map(function (TypeInfo $info) {
+                return $info->entity;
+            }, $infos);
+        }
+        return (new SchemaEditor('App\GraphQL\Type'))->edit($source, $infos, $known);
+    }
+
+    /**
+     * What must hold after any edit that did not fail: the file compiles (names
+     * included, which a syntax check alone does not show), every line of the original
+     * is still there in order, and a second run changes nothing.
+     *
+     * @param TypeInfo[] $infos
+     */
+    protected function assertSoundEdit(string $source, SchemaEditResult $result, array $infos, ?array $known = null): void
+    {
+        $this->assertFalse($result->failed, implode("\n", $result->messages));
+        $this->assertCompiles($result->source);
+        $this->assertLinesSurvive($source, $result->source);
+        $again = $this->edit($result->source, $infos, $known);
+        $this->assertSame($result->source, $again->source, 'a second run must change nothing');
+    }
+
+    protected function assertFailsSafe(string $source, SchemaEditResult $result): void
+    {
+        $this->assertTrue($result->failed, 'expected the editor to refuse this file');
+        $this->assertSame($source, $result->source, 'a refused file must be returned byte for byte');
+        $this->assertStringStartsWith('ApiSchema not changed:', $result->messages[count($result->messages) - 1]);
+    }
+
+    /** `php -l`, which resolves imports and so catches a name bound twice. */
+    protected function assertCompiles(string $code): void
+    {
+        $dir = dirname(__DIR__) . '/build/tmp';
+        if (!is_dir($dir)) {
+            mkdir($dir, 0777, true);
+        }
+        $file = tempnam($dir, 'lint');
+        file_put_contents($file, $code);
+        exec(escapeshellarg(PHP_BINARY) . ' -l ' . escapeshellarg($file) . ' 2>&1', $output, $exit);
+        unlink($file);
+        $this->assertSame(0, $exit, implode("\n", $output) . "\n" . $code);
+    }
+
+    /** Every line of the original, owned entries aside, must appear in the result in the same order. */
+    protected function assertLinesSurvive(string $before, string $after): void
+    {
+        $afterLines = explode("\n", $after);
+        $at = 0;
+        $owned = false;
+        foreach (explode("\n", $before) as $line) {
+            if (trim($line) === '// anorm-graphql') {
+                $owned = true;
+                continue;
+            }
+            if ($owned) {
+                // The lines of an owned entry may be rewritten; it ends at its ->build(), line.
+                $owned = strpos($line, '->build()') === false;
+                continue;
+            }
+            $found = false;
+            for ($i = $at, $n = count($afterLines); $i < $n; $i++) {
+                $same = $afterLines[$i] === $line;
+                $gainedComma = preg_replace('#\)(\s*(//|/\*).*)?$#', '),$1', $line, 1) === $afterLines[$i];
+                // An empty array written on one line opens up: `=> [],` becomes `=> [`.
+                $openedUp = preg_match('#^(.*\[)\s*\],?$#', $line, $m) === 1 && $afterLines[$i] === $m[1];
+                if ($same || $gainedComma || $openedUp) {
+                    $at = $i + 1;
+                    $found = true;
+                    break;
+                }
+            }
+            $this->assertTrue($found, "a hand-written line was lost or moved: [$line]\n" . $after);
+        }
+    }
+}
+```
+
+`test/tools/Schema/SchemaEditorTest.php`:
+
+```php
+<?php
+
+namespace Anorm\GraphQL\Test\Tools\Schema;
+
+use Anorm\GraphQL\Test\SchemaProbe;
+use Anorm\GraphQL\Tools\Schema\SchemaScaffolder;
+
+/**
+ * SchemaEditor is the only part of the tool that edits hand-written code. The
+ * whole-file cases are test/Fixtures/schema/<case>.in.php and <case>.expected.php; to
+ * accept an intended change run with UPDATE_GOLDEN=1 and review the diff in git.
+ */
+class SchemaEditorTest extends SchemaProbe
+{
     private function fixture(string $name): string
     {
         return file_get_contents(dirname(__DIR__, 2) . "/Fixtures/schema/$name.php");
     }
 
     /**
-     * @param TypeInfo[] $infos
+     * @param \Anorm\GraphQL\Tools\TypeInfo[] $infos
      */
-    private function assertEdit(string $case, array $infos): \Anorm\GraphQL\Tools\Schema\SchemaEditResult
+    private function assertFixture(string $case, array $infos): \Anorm\GraphQL\Tools\Schema\SchemaEditResult
     {
-        $editor = new SchemaEditor('App\GraphQL\Type');
-        $result = $editor->edit($this->fixture("$case.in"), $infos);
+        $source = $this->fixture("$case.in");
+        $result = $this->edit($source, $infos);
         $expectedPath = dirname(__DIR__, 2) . "/Fixtures/schema/$case.expected.php";
         if (getenv('UPDATE_GOLDEN')) {
             file_put_contents($expectedPath, $result->source);
         }
         $this->assertSame(file_get_contents($expectedPath), $result->source, "$case: edited source");
-        $this->assertNotEmpty(token_get_all($result->source, TOKEN_PARSE), 'the edited file must still parse');
-
-        $again = $editor->edit($result->source, $infos);
-        $this->assertSame($result->source, $again->source, "$case: a second run must change nothing");
+        $this->assertSoundEdit($source, $result, $infos);
         return $result;
     }
 
     public function testAlphabeticalFile(): void
     {
-        $result = $this->assertEdit('alphabetical', [$this->info('Client'), $this->info('Banana'), $this->info('Zulu', true)]);
-        $this->assertFalse($result->failed);
+        $result = $this->assertFixture('alphabetical', [$this->info('Client'), $this->info('Banana'), $this->info('Zulu', true)]);
         $this->assertSame(
             ["collision: 'clientList' already exists and is not marked as generated; left alone"],
             $result->messages
         );
-        // bananaList lands between appleList and the comment that leads clientList.
-        $this->assertMatchesRegularExpression('/appleList.*bananaList.*A hand-written list.*clientList.*zebraList.*zuluList/s', $result->source);
+        $this->assertMatchesRegularExpression(
+            '/appleList.*bananaList.*A hand-written list.*clientList.*zebraList.*zuluList/s',
+            $result->source
+        );
         $this->assertStringNotContainsString("'zuluUpsert'", $result->source, 'read-only: list only');
     }
 
     public function testUnsortedFileIsNeverReordered(): void
     {
-        $result = $this->assertEdit('unsorted', [$this->info('Mango')]);
+        $result = $this->assertFixture('unsorted', [$this->info('Mango')]);
         $this->assertMatchesRegularExpression('/mangoList.*zebraList.*appleList/s', $result->source);
-        $this->assertStringContainsString("\t\t\t\t\t// anorm-graphql\n\t\t\t\t\tGraphQLUtils::", $result->source, 'tabs are copied');
+        // The file uses GraphQLUtils without importing it, so that name is its own class's.
+        $this->assertStringContainsString("\t\t\t\t\t// anorm-graphql\n\t\t\t\t\t\\Anorm\\GraphQL\\GraphQLUtils::", $result->source, 'tabs are copied');
+        $this->assertStringNotContainsString('use Anorm\GraphQL\GraphQLUtils;', $result->source);
         $this->assertStringContainsString('"brackets ] and , in a string"', $result->source);
+        // An entity called Mango has a MangoInput of its own, and the runtime's is
+        // already imported under that name: the second is written out in full.
+        $this->assertStringContainsString('$this->type(\App\GraphQL\Type\Mango\MangoInput::class)', $result->source);
+        $this->assertSame(1, preg_match_all('/^use .*\\\\MangoInput;$/m', $result->source));
     }
 
     public function testOwnedEntriesAreRewrittenAndUnmarkedOnesLeftAlone(): void
     {
-        $result = $this->assertEdit('owned', [$this->info('Client')]);
+        $result = $this->assertFixture('owned', [$this->info('Client')]);
         $this->assertStringNotContainsString('anOldShape', $result->source);
         $this->assertStringContainsString('resolveMyOwnUpsert', $result->source);
         $this->assertStringContainsString("'goneList'", $result->source, 'an orphan is reported, never deleted');
@@ -3939,37 +4075,509 @@ class SchemaEditorTest extends TestCase
         $this->assertSame(1, substr_count($result->source, 'use Anorm\GraphQL\GraphQLUtils;'), 'imports are not duplicated');
     }
 
-    public function testUnexpectedStructureChangesNothing(): void
+    public function testFieldsBuiltByAMethodCallChangeNothing(): void
     {
         $source = $this->fixture('unparseable.in');
-        $result = (new SchemaEditor('App\GraphQL\Type'))->edit($source, [$this->info('Client')]);
-        $this->assertTrue($result->failed);
-        $this->assertSame($source, $result->source);
-        $this->assertStringContainsString("under 'query'", $result->messages[0]);
-        $this->assertCount(3, $result->paste);
-        $this->assertStringContainsString("'clientList'", $result->paste[0]);
+        $result = $this->edit($source, [$this->info('Client')]);
+        $this->assertFailsSafe($source, $result);
+        $this->assertStringContainsString("'fields' under 'query' is not a literal", $result->messages[0]);
+        $this->assertCount(1, $result->paste['query']);
+        $this->assertCount(2, $result->paste['mutation']);
+        $this->assertStringContainsString('\Anorm\GraphQL\GraphQLUtils::createListField(\'clientList\'', $result->paste['query'][0]);
     }
 
     public function testScaffoldedFileTakesEntries(): void
     {
         $scaffold = (new SchemaScaffolder())->render('App\GraphQL');
-        $editor = new SchemaEditor('App\GraphQL\Type');
-        $result = $editor->edit($scaffold, [$this->info('Client')]);
-        $this->assertFalse($result->failed);
-        $this->assertNotEmpty(token_get_all($result->source, TOKEN_PARSE), 'the edited file must still parse');
+        $result = $this->edit($scaffold, [$this->info('Client')]);
+        $this->assertSoundEdit($scaffold, $result, [$this->info('Client')]);
         $this->assertStringContainsString("                'fields' => [\n                    // anorm-graphql\n", $result->source);
         $this->assertStringContainsString(
             "use App\GraphQL\Type\Client\ClientInput;\nuse App\GraphQL\Type\Client\ClientType;\nuse DI\Container;",
             $result->source,
             'imports go in alphabetical position'
         );
-        $this->assertSame($result->source, $editor->edit($result->source, [$this->info('Client')])->source);
     }
 
     public function testNoEntitiesMeansNoChange(): void
     {
         $source = $this->fixture('alphabetical.in');
-        $this->assertSame($source, (new SchemaEditor('App\GraphQL\Type'))->edit($source, [])->source);
+        $this->assertSame($source, $this->edit($source, [])->source);
+    }
+
+    public function testAnEntityLeftOutOfThisRunIsNotAnOrphan(): void
+    {
+        $both = [$this->info('Client'), $this->info('Owner')];
+        $first = $this->edit($this->schema(''), $both);
+        $onlyClient = $this->edit($first->source, [$this->info('Client')], ['Client', 'Owner']);
+        $this->assertSame([], $onlyClient->messages, '--only Client: Owner still exists');
+        $this->assertSame($first->source, $onlyClient->source);
+
+        $ownerGone = $this->edit($first->source, [$this->info('Client')], ['Client']);
+        $this->assertCount(3, $ownerGone->messages);
+        $this->assertStringContainsString("'ownerList'", $ownerGone->source, 'reported, never deleted');
+    }
+
+    public function testAnEntityThatBecomesReadOnlyHasItsMutationsReportedAsOrphans(): void
+    {
+        $first = $this->edit($this->schema(''), [$this->info('Client')]);
+        $readOnly = $this->edit($first->source, [$this->info('Client', true)]);
+        $this->assertSame(
+            [
+                "orphaned: 'clientDelete' is marked as generated but no model produces it",
+                "orphaned: 'clientUpsert' is marked as generated but no model produces it",
+            ],
+            $readOnly->messages
+        );
+    }
+
+    public function testTwoEntitiesWithTheSameFieldNamesAreReported(): void
+    {
+        $result = $this->edit($this->schema(''), [$this->info('Client'), $this->info('client')]);
+        $this->assertSame(1, substr_count($result->source, "'clientList'"));
+        $this->assertStringContainsString("skipped: 'client' would define 'clientList'", implode("\n", $result->messages));
+    }
+}
+```
+
+`test/tools/Schema/SchemaEditorShapesTest.php`:
+
+```php
+<?php
+
+namespace Anorm\GraphQL\Test\Tools\Schema;
+
+use Anorm\GraphQL\Test\SchemaProbe;
+
+/**
+ * Hand-written schemas come in many shapes. For each, the editor must either make a
+ * sound edit or refuse and change nothing; it must never write a file that does not
+ * compile, put an entry in the wrong place, or lose a line of somebody's code.
+ * Most of these cases came out of an adversarial review of the first implementation.
+ */
+class SchemaEditorShapesTest extends SchemaProbe
+{
+    // ---- where the fields arrays are ----
+
+    public function testAnUnrelatedArrayWithTheSameKeysIsNotMistakenForTheSchema(): void
+    {
+        $constant = "    const REPORT = [\n        'query' => [\n            'sql' => 'SELECT 1',\n            'fields' => [\n"
+            . "                'id',\n            ],\n        ],\n        'mutation' => [\n            'fields' => [\n                'a',\n"
+            . "            ],\n        ],\n    ];\n\n";
+        $source = $this->schema($this->entry('aaa'), $this->entry('aaa'), self::HEADER, $constant);
+        $result = $this->edit($source, [$this->info('Client')]);
+        $this->assertSoundEdit($source, $result, [$this->info('Client')]);
+        $this->assertStringContainsString("'fields' => [\n                'id',\n            ],", $result->source, 'the constant is untouched');
+        $this->assertMatchesRegularExpression("/'name' => 'Query'.*clientList.*'name' => 'Mutation'.*clientDelete.*clientUpsert/s", $result->source);
+    }
+
+    public function testAStrayMutationKeyDoesNotSendMutationsToTheQueryArray(): void
+    {
+        $source = $this->schema($this->entry('aaa'), $this->entry('aaa'), self::HEADER, "    private \$defaults = ['mutation' => true];\n\n");
+        $result = $this->edit($source, [$this->info('Zebra')]);
+        $this->assertSoundEdit($source, $result, [$this->info('Zebra')]);
+        $query = substr($result->source, 0, strpos($result->source, "'name' => 'Mutation'"));
+        $this->assertStringContainsString("'zebraList'", $query);
+        $this->assertStringNotContainsString("'zebraDelete'", $query, 'a mutation must never land in Query');
+    }
+
+    public function testTwoQueryObjectTypesAreAmbiguousSoNothingChanges(): void
+    {
+        $source = $this->schema($this->entry('aaa'))
+            . "\n\$other = ['query' => new ObjectType(['name' => 'Q2', 'fields' => [\n]])];\n";
+        $this->assertFailsSafe($source, $this->edit($source, [$this->info('Client')]));
+    }
+
+    /**
+     * @dataProvider unsupportedFieldsForms
+     */
+    public function testAFormOfFieldsItDoesNotHandleChangesNothing(string $from, string $to): void
+    {
+        $source = str_replace($from, $to, $this->schema(''));
+        $this->assertNotSame($this->schema(''), $source, 'the case must actually alter the schema');
+        $this->assertFailsSafe($source, $this->edit($source, [$this->info('Client')]));
+    }
+
+    /** @return array<string, array<int, string>> */
+    public function unsupportedFieldsForms(): array
+    {
+        $empty = "'name' => 'Query',\n                'fields' => []";
+        return [
+            'array() syntax' => [$empty, "'name' => 'Query',\n                'fields' => array()"],
+            'a closure' => [$empty, "'name' => 'Query',\n                'fields' => function () {\n                    return [];\n                }"],
+            'an arrow function' => [$empty, "'name' => 'Query',\n                'fields' => fn () => []"],
+            'not an ObjectType' => ["'query' => new ObjectType([", "'query' => \$this->queryType(["],
+            'two entries on one line' => [$empty, "'name' => 'Query',\n                'fields' => [\n                    \$a, \$b,\n                ]"],
+            'entries on the bracket line' => [$empty, "'name' => 'Query',\n                'fields' => [\$a]"],
+            'closing bracket on an entry line' => [$empty, "'name' => 'Query',\n                'fields' => [\n                    \$a]"],
+        ];
+    }
+
+    public function testASchemaWithNoMutationTypeTakesReadOnlyEntities(): void
+    {
+        $source = preg_replace("/            'mutation' => new ObjectType\(\[.*?\]\),\n        \]\);/s", '        ]);', $this->schema(''));
+        $this->assertStringNotContainsString('mutation', $source);
+
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        $this->assertSoundEdit($source, $result, [$this->info('Client', true)]);
+        $this->assertStringContainsString("'clientList'", $result->source);
+
+        $this->assertFailsSafe($source, $this->edit($source, [$this->info('Client')]));
+    }
+
+    // ---- entries ----
+
+    public function testALastEntryWithoutACommaGetsOneWhateverItLooksLike(): void
+    {
+        foreach (["                    ...\$this->extraFields()\n", $this->entry('aaa', ''), $this->entry('aaa', ' // last, no comma')] as $last) {
+            $source = $this->schema($this->entry('aab') . $last);
+            $result = $this->edit($source, [$this->info('Zulu', true)]);
+            $this->assertSoundEdit($source, $result, [$this->info('Zulu', true)]);
+            $this->assertStringContainsString("\n                ],\n            ]),\n            'mutation'", $result->source, 'the closing bracket keeps its indentation');
+        }
+        $this->assertStringContainsString("->build(), // last, no comma\n", $result->source, 'the comma goes before the trailing comment');
+    }
+
+    public function testAnOrphanedLastEntryWithoutACommaStillGetsOne(): void
+    {
+        $orphan = "                    // anorm-graphql\n                    \$this->generatedOnce('goneList', \$this->type(Gone::class))\n";
+        $source = $this->schema($this->entry('aaa') . $orphan);
+        $result = $this->edit($source, [$this->info('Zulu', true)]);
+        $this->assertSoundEdit($source, $result, [$this->info('Zulu', true)]);
+        $this->assertContains("orphaned: 'goneList' is marked as generated but no model produces it", $result->messages);
+        $this->assertStringContainsString("\$this->type(Gone::class)),\n", $result->source);
+    }
+
+    public function testTwoIdenticalLastEntriesDoNotConfuseTheCommaRepair(): void
+    {
+        $source = $this->schema($this->entry('aaa') . $this->entry('aaa', ''));
+        $result = $this->edit($source, [$this->info('Zulu', true)]);
+        $this->assertSoundEdit($source, $result, [$this->info('Zulu', true)]);
+    }
+
+    public function testAnOwnedEntryWithoutAReadableNameIsReportedAsSuch(): void
+    {
+        $source = $this->schema("                    // anorm-graphql\n                    \$this->mystery(),\n");
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        $this->assertSoundEdit($source, $result, [$this->info('Client', true)]);
+        $this->assertSame(['orphaned: an entry is marked as generated but its field name cannot be read'], $result->messages);
+    }
+
+    public function testTheSameNameMarkedTwiceIsReportedAndOnlyTheFirstRewritten(): void
+    {
+        $owned = "                    // anorm-graphql\n                    \$this->old('clientList'),\n";
+        $source = $this->schema($owned . $owned);
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        $this->assertFalse($result->failed);
+        $this->assertSame(1, substr_count($result->source, "createListField('clientList'"));
+        $this->assertSame(1, substr_count($result->source, "\$this->old('clientList')"));
+        $this->assertStringContainsString("duplicate: 'clientList'", implode("\n", $result->messages));
+        $this->assertSame($result->source, $this->edit($result->source, [$this->info('Client', true)])->source);
+    }
+
+    public function testACommentBetweenTheMarkerAndTheCodeMakesTheEntryHandWritten(): void
+    {
+        $note = "                    // anorm-graphql\n                    // a note the developer added underneath the marker\n" . $this->entry('clientList');
+        $source = $this->schema($note);
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        $this->assertSoundEdit($source, $result, [$this->info('Client', true)]);
+        $this->assertStringContainsString('a note the developer added', $result->source);
+        $this->assertContains("collision: 'clientList' already exists and is not marked as generated; left alone", $result->messages);
+    }
+
+    /**
+     * @dataProvider markerLookalikes
+     */
+    public function testOnlyTheExactMarkerMeansOwned(string $comment): void
+    {
+        $source = $this->schema("                    $comment\n" . $this->entry('clientList'));
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        $this->assertSoundEdit($source, $result, [$this->info('Client', true)]);
+        $this->assertStringContainsString("handWritten('clientList'", $result->source, 'not rewritten');
+    }
+
+    /** @return array<string, array<int, string>> */
+    public function markerLookalikes(): array
+    {
+        return ['block comment' => ['/* anorm-graphql */'], 'no space' => ['//anorm-graphql'], 'more words' => ['// anorm-graphql: client']];
+    }
+
+    public function testATrailingCommentStaysWithItsOwnEntry(): void
+    {
+        $query = $this->entry('aaa', ', // keep me') . $this->entry('bbb', ', /* and me */')
+            . "                    /** doc comment for ddd */\n" . $this->entry('ddd');
+        $source = $this->schema($query);
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        $this->assertSoundEdit($source, $result, [$this->info('Client', true)]);
+        $this->assertMatchesRegularExpression('#bbb.*/\* and me \*/\n\s+// anorm-graphql\n.*clientList.*->build\(\),\n\s+/\*\* doc comment for ddd#s', $result->source);
+    }
+
+    public function testATrailingCommentOnAnOwnedEntrySurvivesTheRewrite(): void
+    {
+        $first = $this->edit($this->schema(''), [$this->info('Client', true)]);
+        $annotated = str_replace("        ->build(),\n                ],\n            ]),\n            'mutation'", "        ->build(), // reviewed by me\n                ],\n            ]),\n            'mutation'", $first->source);
+        $this->assertNotSame($first->source, $annotated);
+        $again = $this->edit($annotated, [$this->info('Client', true)]);
+        $this->assertSame($annotated, $again->source);
+    }
+
+    public function testArrayStyleAndKeyedEntriesAreReadByTheirFieldName(): void
+    {
+        $query = "                    ['name' => 'aardvark', 'type' => Type::string()],\n"
+            . "                    ['name' => 'clientList', 'type' => Type::string(), 'resolve' => 'mine'],\n"
+            . "                    'zebra' => ['type' => Type::string()],\n";
+        $source = $this->schema($query);
+        $infos = [$this->info('Client', true), $this->info('Monkey', true)];
+        $result = $this->edit($source, $infos);
+        $this->assertSoundEdit($source, $result, $infos);
+        $this->assertSame(["collision: 'clientList' already exists and is not marked as generated; left alone"], $result->messages);
+        $this->assertMatchesRegularExpression("/aardvark.*'mine'.*monkeyList.*'zebra'/s", $result->source);
+    }
+
+    public function testBracketsInsideStringsHeredocsAndClosuresAreNotCounted(): void
+    {
+        $query = "                    GraphQLUtils::createField('aaa', \$t, 'r')->setDescription(<<<TXT\n  ] , [ {\$x['k']} \${y}\nTXT\n"
+            . "                    )->setResolver(function (\$r, \$a) { return [\$a['x'], \"] , {\$a['y']}\"]; })->build(),\n"
+            . $this->entry('zzz');
+        $source = $this->schema($query);
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        $this->assertSoundEdit($source, $result, [$this->info('Client', true)]);
+        $this->assertMatchesRegularExpression("#'aaa'.*->build\(\),\n\s+// anorm-graphql\n.*clientList.*'zzz'#s", $result->source);
+    }
+
+    public function testAnAttributeInsideTheArrayDoesNotUnbalanceTheBrackets(): void
+    {
+        if (PHP_VERSION_ID < 80000) {
+            // On 7.4 `#[...]` is a comment to the end of the line, so the attribute has a line to itself.
+            $query = "                    'aaa' => [\n                        'resolve' =>\n                            #[SensitiveParameter]\n"
+                . "                            function (\$root, \$args) { return 1; },\n                    ],\n" . $this->entry('zzz');
+        } else {
+            $query = "                    'aaa' => [\n                        'resolve' => #[SensitiveParameter] function (\$root, \$args) { return 1; },\n"
+                . "                    ],\n" . $this->entry('zzz');
+        }
+        $source = $this->schema($query);
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        $this->assertSoundEdit($source, $result, [$this->info('Client', true)]);
+        $this->assertMatchesRegularExpression("#'aaa' => \[.*\n                    \],\n\s+// anorm-graphql\n.*clientList.*'zzz'#s", $result->source);
+    }
+
+    /**
+     * @dataProvider emptyArrays
+     */
+    public function testEveryWayOfWritingAnEmptyArray(string $inside): void
+    {
+        $source = str_replace("'name' => 'Query',\n                'fields' => []", "'name' => 'Query',\n                'fields' => [$inside]", $this->schema(''));
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        $this->assertSoundEdit($source, $result, [$this->info('Client', true)]);
+        $this->assertStringContainsString("'clientList'", $result->source);
+    }
+
+    /** @return array<string, array<int, string>> */
+    public function emptyArrays(): array
+    {
+        return [
+            'nothing' => [''],
+            'a space' => [' '],
+            'a newline' => ["\n                "],
+            'only a comment' => ["\n                    // nothing here yet\n                "],
+        ];
+    }
+
+    // ---- line endings ----
+
+    public function testACrlfFileStaysCrlf(): void
+    {
+        $source = str_replace("\n", "\r\n", $this->schema($this->entry('aaa'), $this->entry('aaa')));
+        $result = $this->edit($source, [$this->info('Client')]);
+        $this->assertFalse($result->failed, implode("\n", $result->messages));
+        $this->assertSame(0, preg_match('/(?<!\r)\n/', $result->source), 'no bare LF may be introduced');
+        $this->assertCompiles($result->source);
+        $this->assertSame($result->source, $this->edit($result->source, [$this->info('Client')])->source);
+    }
+
+    public function testOneStrayCrlfDoesNotMakeAnLfFileCrlf(): void
+    {
+        $source = str_replace("'name' => 'Query',\n", "'name' => 'Query',\r\n", $this->schema($this->entry('aaa')));
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        $this->assertFalse($result->failed, implode("\n", $result->messages));
+        $this->assertSame(1, substr_count($result->source, "\r"), 'inserted lines use the ending the file mostly uses');
+    }
+
+    public function testABomAndAMissingFinalNewlineAreLeftAsTheyAre(): void
+    {
+        $source = "\xEF\xBB\xBF" . rtrim($this->schema($this->entry('aaa')), "\n");
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        $this->assertFalse($result->failed, implode("\n", $result->messages));
+        $this->assertStringStartsWith("\xEF\xBB\xBF<?php", $result->source);
+        $this->assertSame('}', substr($result->source, -1));
+    }
+
+    // ---- imports ----
+
+    /**
+     * @dataProvider headers
+     * @param string[] $mustContain
+     * @param string[] $mustNotContain
+     */
+    public function testImportsNeverClashWithWhatIsThere(string $header, array $mustContain, array $mustNotContain): void
+    {
+        $source = $this->schema($this->entry('aaa'), $this->entry('aaa'), $header);
+        $result = $this->edit($source, [$this->info('Client')]);
+        $this->assertSoundEdit($source, $result, [$this->info('Client')]);
+        foreach ($mustContain as $text) {
+            $this->assertStringContainsString($text, $result->source);
+        }
+        foreach ($mustNotContain as $text) {
+            $this->assertStringNotContainsString($text, $result->source);
+        }
+    }
+
+    /** @return array<string, array<int, mixed>> */
+    public function headers(): array
+    {
+        $ns = "<?php\n\nnamespace App\\GraphQL;\n\n";
+        return [
+            'the same short name from elsewhere' => [
+                $ns . "use Api\\GraphQL\\Type\\MangoInput;\nuse Other\\Type;\n",
+                ['$this->type(\Anorm\GraphQL\Type\MangoInput::class)', '\GraphQL\Type\Definition\Type::nonNull('],
+                ['use Anorm\GraphQL\Type\MangoInput;', 'use GraphQL\Type\Definition\Type;'],
+            ],
+            'a grouped import' => [
+                $ns . "use GraphQL\\Type\\Definition\\{ObjectType, Type};\nuse DI\\Container;\n",
+                ['Type::nonNull(Type::listOf('],
+                ['use GraphQL\Type\Definition\Type;', '\GraphQL\Type\Definition\Type::'],
+            ],
+            'an aliased import of the very class' => [
+                $ns . "use GraphQL\\Type\\Definition\\Type as GType;\n",
+                ['GType::nonNull(GType::listOf('],
+                ['use GraphQL\Type\Definition\Type;', ' Type::nonNull('],
+            ],
+            'declare and no namespace' => [
+                "<?php\ndeclare(strict_types=1);\n",
+                ["declare(strict_types=1);\n\nuse Anorm\\GraphQL\\GraphQLUtils;\n"],
+                [],
+            ],
+            'nothing at all' => ["<?php\n", ["<?php\nuse Anorm\\GraphQL\\GraphQLUtils;\n"], []],
+            'no use lines' => [$ns, ["namespace App\\GraphQL;\n\nuse Anorm\\GraphQL\\GraphQLUtils;\n"], []],
+            'use function and use const' => [
+                $ns . "use function strlen;\nuse const PHP_EOL;\nuse DI\\Container;\n",
+                ['use Anorm\GraphQL\GraphQLUtils;'],
+                [],
+            ],
+            'a class of the same name declared in the file' => [
+                $ns . "use DI\\Container;\n\nclass Type\n{\n}\n",
+                ['\GraphQL\Type\Definition\Type::nonNull('],
+                ['use GraphQL\Type\Definition\Type;'],
+            ],
+        ];
+    }
+
+    public function testANameTheFileUsesFromItsOwnNamespaceIsNotShadowed(): void
+    {
+        // No import of GraphQLUtils: these references mean App\GraphQL\GraphQLUtils.
+        $mine = "                    GraphQLUtils::createField('aaa', \$this->type(AType::class), 'r')->build(),\n";
+        $source = $this->schema($mine, $mine);
+        $result = $this->edit($source, [$this->info('Client')]);
+        $this->assertSoundEdit($source, $result, [$this->info('Client')]);
+        $this->assertStringNotContainsString('use Anorm\GraphQL\GraphQLUtils;', $result->source, 'that would repoint the hand-written calls');
+        $this->assertStringContainsString("\\Anorm\\GraphQL\\GraphQLUtils::createListField('clientList'", $result->source);
+        $this->assertStringContainsString("GraphQLUtils::createField('aaa'", $result->source);
+    }
+
+    public function testTheFirstPartOfAQualifiedNameIsANameInUseToo(): void
+    {
+        // `Type\Action\ActionType` means App\GraphQL\Type\Action\ActionType. Importing a class
+        // called Type would repoint it. PHP 8 makes that name one token, 7.4 several.
+        $mine = "                    \$this->handWritten('aaa', \$this->type(Type\\Action\\ActionType::class), 'r')->build(),\n";
+        $source = $this->schema($mine, $mine);
+        $result = $this->edit($source, [$this->info('Client')]);
+        $this->assertSoundEdit($source, $result, [$this->info('Client')]);
+        $this->assertStringNotContainsString('use GraphQL\Type\Definition\Type;', $result->source);
+        $this->assertStringContainsString('\GraphQL\Type\Definition\Type::nonNull(', $result->source);
+    }
+
+    public function testAUseStatementSplitAcrossLinesStillBindsItsName(): void
+    {
+        $header = "<?php\n\nnamespace App\\GraphQL;\n\nuse GraphQL\\Type\\Definition\\\n    Type;\n";
+        $source = $this->schema($this->entry('aaa'), $this->entry('aaa'), $header);
+        $result = $this->edit($source, [$this->info('Client')]);
+        if (PHP_VERSION_ID >= 80000) {
+            // Whitespace inside a name stopped being legal in PHP 8: the file itself does not parse.
+            $this->assertFailsSafe($source, $result);
+            $this->assertStringContainsString('the file does not parse under PHP', $result->messages[0]);
+            return;
+        }
+        $this->assertSoundEdit($source, $result, [$this->info('Client')]);
+        $this->assertSame(0, preg_match('/^use GraphQL\\\\Type\\\\Definition\\\\Type;$/m', $result->source), 'already imported');
+        $this->assertStringContainsString(' Type::nonNull(Type::listOf(', $result->source);
+    }
+
+    public function testAUseStatementItCannotReadMeansNothingIsImported(): void
+    {
+        // `use` of a namespace-relative name is legal and odd enough not to be understood.
+        $header = "<?php\n\nnamespace App\\GraphQL;\n\nuse namespace\\Sub\\Thing;\n";
+        $source = $this->schema($this->entry('aaa'), '', $header);
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        if ($result->failed) {
+            $this->assertFailsSafe($source, $result);
+            return;
+        }
+        $this->assertLinesSurvive($source, $result->source);
+        $this->assertSame(1, substr_count($result->source, "\nuse "), 'no import was added');
+        $this->assertStringContainsString('\Anorm\GraphQL\GraphQLUtils::createListField(', $result->source);
+    }
+
+    public function testTwoNamespacesInOneFileGetFullyQualifiedNamesAndNoImports(): void
+    {
+        $body = substr($this->schema($this->entry('aaa'), $this->entry('aaa'), ''), 1);
+        $source = "<?php\n\nnamespace App\\Other;\n\nuse DI\\Container;\n\nclass Helper\n{\n}\n\nnamespace App\\GraphQL;\n\nuse GraphQL\\Type\\Schema;\n" . $body;
+        $result = $this->edit($source, [$this->info('Client')]);
+        $this->assertSoundEdit($source, $result, [$this->info('Client')]);
+        $this->assertSame(2, substr_count($result->source, "\nuse "), 'no import was added to either namespace');
+        $this->assertStringContainsString('\App\GraphQL\Type\Client\ClientType::class', $result->source);
+    }
+
+    public function testABracedNamespaceGetsFullyQualifiedNamesAndNoImports(): void
+    {
+        $body = substr($this->schema($this->entry('aaa'), $this->entry('aaa'), ''), 1);
+        $source = "<?php\n\nnamespace App\\GraphQL {\n    use GraphQL\\Type\\Schema;\n" . $body . "}\n";
+        $result = $this->edit($source, [$this->info('Client')]);
+        $this->assertSoundEdit($source, $result, [$this->info('Client')]);
+        $this->assertStringContainsString('\Anorm\GraphQL\GraphQLUtils::createListField(', $result->source);
+        $this->assertSame(1, substr_count($result->source, "\n    use "), 'no import was added');
+    }
+
+    public function testATraitUseAndAClosureUseAreNotImports(): void
+    {
+        $classBody = "    use SomeTrait;\n\n    private function f()\n    {\n        return function () use (\$x) {\n        };\n    }\n\n";
+        $source = $this->schema($this->entry('aaa'), '', self::HEADER, $classBody);
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        $this->assertSoundEdit($source, $result, [$this->info('Client', true)]);
+        $this->assertStringContainsString("use Anorm\\GraphQL\\Type\\MangoInput;\nuse App\\GraphQL\\Type\\Client\\ClientType;\nuse GraphQL\\Type\\Schema;", $result->source);
+    }
+
+    public function testNothingInsertedMeansNoImportsAdded(): void
+    {
+        $source = $this->schema($this->entry('clientList'));
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        $this->assertSame($source, $result->source, 'every field collided, so the file must be untouched');
+        $this->assertCount(1, $result->messages);
+    }
+
+    // ---- scale ----
+
+    public function testALargeArrayIsHandledInReasonableTime(): void
+    {
+        $query = '';
+        for ($i = 0; $i < 3000; $i++) {
+            $query .= $this->entry(sprintf('f%05d', $i));
+        }
+        $source = $this->schema($query);
+        $started = microtime(true);
+        $result = $this->edit($source, [$this->info('Client', true)]);
+        $this->assertLessThan(5.0, microtime(true) - $started);
+        $this->assertFalse($result->failed);
+        $this->assertStringContainsString("'clientList'", $result->source);
     }
 }
 ```
@@ -3981,27 +4589,563 @@ Expected: `Class 'Anorm\GraphQL\Tools\Schema\SchemaEditor' not found`.
 
 - [ ] **Step 4: Write the implementation**
 
+`tools/src/Schema/SchemaShapeException.php`:
+
+```php
+<?php
+namespace Anorm\GraphQL\Tools\Schema;
+
+/** The file is not shaped in a way the editor is sure of. Nothing must be changed. */
+class SchemaShapeException extends \Exception
+{
+}
+```
+
+`tools/src/Schema/Tokens.php`:
+
+```php
+<?php
+namespace Anorm\GraphQL\Tools\Schema;
+
+/**
+ * A PHP source as tokens with byte offsets and bracket depths.
+ *
+ * Written to give the same answers on PHP 7.4 and 8.x, whose tokenizers differ: 8.x
+ * has single tokens for qualified names, and an attribute `#[` opens a bracket there
+ * while being a comment on 7.4.
+ */
+class Tokens
+{
+    /** @var array<int, array{id: int|null, text: string, offset: int}> */
+    public $list = array();
+    /** @var int[] Bracket depth before each token; an opening bracket has the depth of its surroundings */
+    public $depth = array();
+    /** @var array<int, int> Index of an opening bracket => index of its closing bracket */
+    public $closes = array();
+    /** @var array<int, int|null> Index of a token => index of the bracket that encloses it */
+    public $parent = array();
+
+    public function __construct($source)
+    {
+        $offset = 0;
+        foreach (\token_get_all($source) as $token) {
+            $id = \is_array($token) ? $token[0] : null;
+            $text = \is_array($token) ? $token[1] : $token;
+            $this->list[] = array('id' => $id, 'text' => $text, 'offset' => $offset);
+            $offset += \strlen($text);
+        }
+        $stack = array();
+        foreach ($this->list as $i => $token) {
+            if ($this->isClose($token)) {
+                $open = \array_pop($stack);
+                if ($open === null) {
+                    throw new SchemaShapeException('unbalanced brackets');
+                }
+                $this->closes[$open] = $i;
+            }
+            $this->depth[$i] = \count($stack);
+            $this->parent[$i] = $stack ? $stack[\count($stack) - 1] : null;
+            if ($this->isOpen($token)) {
+                $stack[] = $i;
+            }
+        }
+        if ($stack) {
+            throw new SchemaShapeException('unbalanced brackets');
+        }
+    }
+
+    public function isOpen(array $token)
+    {
+        if ($token['id'] === null) {
+            return $token['text'] === '[' || $token['text'] === '(' || $token['text'] === '{';
+        }
+        return $token['id'] === T_CURLY_OPEN
+            || $token['id'] === T_DOLLAR_OPEN_CURLY_BRACES
+            || (\defined('T_ATTRIBUTE') && $token['id'] === \constant('T_ATTRIBUTE'));
+    }
+
+    public function isClose(array $token)
+    {
+        return $token['id'] === null
+            && ($token['text'] === ']' || $token['text'] === ')' || $token['text'] === '}');
+    }
+
+    public function isTrivia($i)
+    {
+        $id = $this->list[$i]['id'];
+        return $id === T_WHITESPACE || $id === T_COMMENT || $id === T_DOC_COMMENT;
+    }
+
+    /** @return int|null Index of the next token after $i that is not whitespace or a comment */
+    public function nextCode($i)
+    {
+        for ($j = $i + 1, $n = \count($this->list); $j < $n; $j++) {
+            if (!$this->isTrivia($j)) {
+                return $j;
+            }
+        }
+        return null;
+    }
+
+    public function isString($i, $value = null)
+    {
+        if ($i === null || $this->list[$i]['id'] !== T_CONSTANT_ENCAPSED_STRING) {
+            return false;
+        }
+        return $value === null || $this->stringValue($i) === $value;
+    }
+
+    public function stringValue($i)
+    {
+        return \substr($this->list[$i]['text'], 1, -1);
+    }
+
+    public function is($i, $text)
+    {
+        return $i !== null && $this->list[$i]['id'] === null && $this->list[$i]['text'] === $text;
+    }
+
+    public function isId($i, $id)
+    {
+        return $i !== null && $this->list[$i]['id'] === $id;
+    }
+
+    /**
+     * Read a class name starting at $i, however this PHP version tokenizes it.
+     *
+     * @return array{0: string, 1: int}|null The name, and the index of the token after it
+     */
+    public function readName($i)
+    {
+        $name = '';
+        $n = \count($this->list);
+        while ($i < $n) {
+            if ($this->isNamePart($i)) {
+                $name .= $this->list[$i]['text'];
+                $i++;
+                continue;
+            }
+            // PHP 7.4 allows whitespace and comments around the separators of a name
+            // (`Foo\` newline `Bar`); 8.x does not, and never gets here with such a file.
+            $next = $this->isTrivia($i) ? $this->nextCode($i) : null;
+            $joins = $next !== null && $name !== '' && $this->isNamePart($next)
+                && (\substr($name, -1) === '\\' || $this->list[$next]['id'] === T_NS_SEPARATOR);
+            if (!$joins) {
+                break;
+            }
+            $i = $next;
+        }
+        return $name === '' ? null : array($name, $i);
+    }
+
+    /** Whether the token is a qualified name in one piece, as PHP 8.x produces. */
+    public function isQualifiedNameToken($i)
+    {
+        foreach (array('T_NAME_QUALIFIED', 'T_NAME_RELATIVE') as $constant) {
+            if (\defined($constant) && $this->list[$i]['id'] === \constant($constant)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function isNamePart($i)
+    {
+        $id = $this->list[$i]['id'];
+        if ($id === T_STRING || $id === T_NS_SEPARATOR) {
+            return true;
+        }
+        foreach (array('T_NAME_QUALIFIED', 'T_NAME_FULLY_QUALIFIED', 'T_NAME_RELATIVE') as $constant) {
+            if (\defined($constant) && $id === \constant($constant)) {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+```
+
+`tools/src/Schema/ImportTable.php`:
+
+```php
+<?php
+namespace Anorm\GraphQL\Tools\Schema;
+
+/**
+ * The names a file's `use` statements bind, and a safe way to refer to one more class.
+ *
+ * PHP cares about the short name an import binds, not the class it points at: two
+ * imports ending in `Type` are a fatal error however different their namespaces. So a
+ * class is imported only when its short name is free. When it is taken, the generated
+ * code names the class in full instead, which always works.
+ *
+ * "Taken" includes a name the file merely uses. An unqualified `GraphQLUtils` with no
+ * import means a class of that name in the file's own namespace; importing another
+ * `GraphQLUtils` would compile, and silently repoint every one of those references.
+ */
+class ImportTable
+{
+    /** @var array<string, array{fqcn: string, name: string}> Lower-case bound name => what it binds */
+    private $bound = array();
+    /** @var array<int, array{fqcn: string, start: int, end: int, simple: bool}> Top-level use statements, in order */
+    private $statements = array();
+    /** @var array<string, bool> Lower-case names the file uses without qualifying or importing them */
+    private $referenced = array();
+    /** @var string[] Classes to import, as decided by resolve() */
+    private $added = array();
+    /** @var int|null Where a first import would go; null when imports cannot be added safely */
+    private $fallbackOffset = null;
+    /** @var bool */
+    private $fallbackNeedsBlankLine = false;
+    /** @var bool true when the imports could not be read with confidence: then nothing is imported or trusted */
+    private $unsure = false;
+    /** @var string */
+    private $source;
+
+    public function __construct($source, Tokens $tokens)
+    {
+        $this->source = $source;
+        $this->parse($tokens);
+    }
+
+    /**
+     * The text to write for a class: its short name when that is, or can be made, an
+     * import of exactly this class, and otherwise the fully qualified name.
+     *
+     * @param string $fqcn No leading backslash
+     * @return string
+     */
+    public function resolve($fqcn)
+    {
+        if ($this->unsure) {
+            return '\\' . $fqcn;
+        }
+        foreach ($this->bound as $binding) {
+            if (\strcasecmp($binding['fqcn'], $fqcn) === 0) {
+                return $binding['name'];
+            }
+        }
+        $parts = \explode('\\', $fqcn);
+        $short = \end($parts);
+        $key = \strtolower($short);
+        $taken = isset($this->bound[$key]) || isset($this->referenced[$key]);
+        if ($taken || ($this->fallbackOffset === null && !$this->statements)) {
+            return '\\' . $fqcn;
+        }
+        $this->bound[$key] = array('fqcn' => $fqcn, 'name' => $short);
+        $this->added[] = $fqcn;
+        return $short;
+    }
+
+    /**
+     * @param string $eol
+     * @return array<int, array{0: int, 1: int, 2: string}> Splices: offset, length, replacement
+     */
+    public function splices($eol)
+    {
+        if (!$this->added) {
+            return array();
+        }
+        $added = $this->added;
+        \sort($added, SORT_STRING);
+
+        if (!$this->statements) {
+            $block = ($this->fallbackNeedsBlankLine ? $eol : '');
+            foreach ($added as $fqcn) {
+                $block .= 'use ' . $fqcn . ';' . $eol;
+            }
+            return array(array($this->fallbackOffset, 0, $block));
+        }
+
+        $allSimple = true;
+        foreach ($this->statements as $statement) {
+            $allSimple = $allSimple && $statement['simple'];
+        }
+        $last = $this->statements[\count($this->statements) - 1];
+        $byOffset = array();
+        foreach ($added as $fqcn) {
+            $at = $last['end'];
+            if ($allSimple) {
+                foreach ($this->statements as $statement) {
+                    if (\strcmp($statement['fqcn'], $fqcn) > 0) {
+                        $at = $statement['start'];
+                        break;
+                    }
+                }
+            }
+            $byOffset[$at] = (isset($byOffset[$at]) ? $byOffset[$at] : '') . 'use ' . $fqcn . ';' . $eol;
+        }
+        $splices = array();
+        foreach ($byOffset as $offset => $text) {
+            $splices[] = array($offset, 0, $text);
+        }
+        return $splices;
+    }
+
+    private function parse(Tokens $tokens)
+    {
+        $namespace = '';
+        $namespaces = 0;
+        $bracedNamespace = false;
+        $afterOpenTag = null;
+        $afterDeclare = null;
+        $afterNamespace = null;
+
+        $inUse = false;
+        foreach ($tokens->list as $i => $token) {
+            if ($tokens->depth[$i] === 0) {
+                // The names inside a top-level `use` are imports, handled below, not references.
+                $inUse = $token['id'] === T_USE || ($inUse && !$tokens->is($i, ';'));
+            }
+            if ($token['id'] === T_OPEN_TAG && $afterOpenTag === null) {
+                $afterOpenTag = $this->endOfLine($token['offset'] + \strlen($token['text']) - 1);
+            }
+            if ($token['id'] === T_STRING && !$inUse && $this->isClassReference($tokens, $i)) {
+                // On 7.4 this is also how the first part of `Type\Action\ActionType` is seen.
+                $this->referenced[\strtolower($token['text'])] = true;
+            } elseif (!$inUse && $tokens->isQualifiedNameToken($i)) {
+                // On 8.x that name is one token. PHP resolves its first part through the
+                // imports just as it does an unqualified name, so that part is in use too.
+                $parts = \explode('\\', $token['text']);
+                if (\strtolower($parts[0]) !== 'namespace') {
+                    $this->referenced[\strtolower($parts[0])] = true;
+                }
+            }
+            if ($tokens->depth[$i] !== 0) {
+                // A class's own name is bound too, wherever it is declared.
+                $this->noteDeclaredClass($tokens, $i, $namespace);
+                continue;
+            }
+            if ($token['id'] === T_DECLARE) {
+                $end = $this->statementEnd($tokens, $i);
+                $afterDeclare = $end === null ? $afterDeclare : $this->endOfLine($tokens->list[$end]['offset']);
+            } elseif ($token['id'] === T_NAMESPACE) {
+                $namespaces++;
+                $name = $tokens->readName($tokens->nextCode($i));
+                $namespace = $name === null ? '' : \trim($name[0], '\\');
+                $end = $this->statementEnd($tokens, $i);
+                if ($end === null) {
+                    $bracedNamespace = true;
+                } else {
+                    $afterNamespace = $this->endOfLine($tokens->list[$end]['offset']);
+                }
+            } elseif ($token['id'] === T_USE) {
+                $this->parseUse($tokens, $i);
+            }
+            $this->noteDeclaredClass($tokens, $i, $namespace);
+        }
+
+        if ($bracedNamespace || $namespaces > 1) {
+            // `namespace X { ... }`, or several namespaces in one file: which imports apply
+            // to the schema class is not worth guessing at.
+            $this->unsure = true;
+        }
+        if ($this->unsure) {
+            $this->statements = array();
+            $this->fallbackOffset = null;
+            return;
+        }
+        if ($afterNamespace !== null) {
+            $this->fallbackOffset = $afterNamespace;
+            $this->fallbackNeedsBlankLine = true;
+        } elseif ($afterDeclare !== null) {
+            $this->fallbackOffset = $afterDeclare;
+            $this->fallbackNeedsBlankLine = true;
+        } else {
+            $this->fallbackOffset = $afterOpenTag;
+        }
+    }
+
+    /**
+     * Whether the T_STRING at $i could name a class, as opposed to a method, a property,
+     * a constant or a function being declared, or a later part of a qualified name.
+     */
+    private function isClassReference(Tokens $tokens, $i)
+    {
+        $before = $i - 1;
+        while ($before >= 0 && $tokens->isTrivia($before)) {
+            $before--;
+        }
+        if ($before < 0) {
+            return true;
+        }
+        $notClasses = array(T_OBJECT_OPERATOR, T_DOUBLE_COLON, T_FUNCTION, T_CONST, T_NS_SEPARATOR);
+        if (\defined('T_NULLSAFE_OBJECT_OPERATOR')) {
+            $notClasses[] = \constant('T_NULLSAFE_OBJECT_OPERATOR');
+        }
+        return !\in_array($tokens->list[$before]['id'], $notClasses, true);
+    }
+
+    private function noteDeclaredClass(Tokens $tokens, $i, $namespace)
+    {
+        $id = $tokens->list[$i]['id'];
+        if ($id !== T_CLASS && $id !== T_INTERFACE && $id !== T_TRAIT) {
+            return;
+        }
+        $name = $tokens->nextCode($i);
+        if ($tokens->isId($name, T_STRING)) {
+            $short = $tokens->list[$name]['text'];
+            $this->bound[\strtolower($short)] = array(
+                'fqcn' => \ltrim($namespace . '\\' . $short, '\\'),
+                'name' => $short,
+            );
+        }
+    }
+
+    private function parseUse(Tokens $tokens, $use)
+    {
+        $end = $this->statementEnd($tokens, $use);
+        if ($end === null) {
+            return;
+        }
+        $i = $tokens->nextCode($use);
+        if ($tokens->isId($i, T_FUNCTION) || $tokens->isId($i, T_CONST)) {
+            return;
+        }
+        $classes = array();
+        $grouped = false;
+        while ($i !== null && $i < $end) {
+            $name = $tokens->readName($i);
+            if ($name === null) {
+                break;
+            }
+            $prefix = \trim($name[0], '\\');
+            $i = $tokens->isTrivia($name[1]) ? $tokens->nextCode($name[1]) : $name[1];
+            if ($tokens->is($i, '{')) {
+                $grouped = true;
+                $classes = \array_merge($classes, $this->parseGroup($tokens, $i, $prefix));
+                $i = $tokens->nextCode($tokens->closes[$i]);
+            } else {
+                $alias = null;
+                if ($tokens->isId($i, T_AS)) {
+                    $aliasAt = $tokens->nextCode($i);
+                    $alias = $tokens->list[$aliasAt]['text'];
+                    $i = $tokens->nextCode($aliasAt);
+                }
+                $classes[] = array($prefix, $alias);
+            }
+            if (!$tokens->is($i, ',')) {
+                break;
+            }
+            $i = $tokens->nextCode($i);
+        }
+        if ($i !== $end) {
+            // Something in this statement was not understood, so what it binds is unknown.
+            $this->unsure = true;
+        }
+        foreach ($classes as $class) {
+            $parts = \explode('\\', $class[0]);
+            $name = $class[1] === null ? \end($parts) : $class[1];
+            $this->bound[\strtolower($name)] = array('fqcn' => $class[0], 'name' => $name);
+        }
+
+        $start = $tokens->list[$use]['offset'];
+        $lineStart = $start === 0 ? false : \strrpos($this->source, "\n", $start - \strlen($this->source) - 1);
+        $lineStart = $lineStart === false ? 0 : $lineStart + 1;
+        $statementEnd = $this->endOfLine($tokens->list[$end]['offset']);
+        $text = \substr($this->source, $lineStart, $statementEnd - $lineStart);
+        $this->statements[] = array(
+            'fqcn' => \count($classes) === 1 ? $classes[0][0] : '',
+            'start' => $lineStart,
+            'end' => $statementEnd,
+            'simple' => !$grouped && \count($classes) === 1 && $lineStart === $start
+                && \substr_count(\rtrim($text, "\r\n"), "\n") === 0,
+        );
+    }
+
+    /**
+     * @return array<int, array{0: string, 1: string|null}> Class and alias pairs
+     */
+    private function parseGroup(Tokens $tokens, $open, $prefix)
+    {
+        $classes = array();
+        $i = $tokens->nextCode($open);
+        while ($i !== null && $i < $tokens->closes[$open]) {
+            if ($tokens->isId($i, T_FUNCTION) || $tokens->isId($i, T_CONST)) {
+                // A function or constant import binds no class name; skip to the next item.
+                while ($i < $tokens->closes[$open] && !$tokens->is($i, ',')) {
+                    $i++;
+                }
+            } else {
+                $name = $tokens->readName($i);
+                if ($name === null) {
+                    break;
+                }
+                $i = $tokens->isTrivia($name[1]) ? $tokens->nextCode($name[1]) : $name[1];
+                $alias = null;
+                if ($tokens->isId($i, T_AS)) {
+                    $aliasAt = $tokens->nextCode($i);
+                    $alias = $tokens->list[$aliasAt]['text'];
+                    $i = $tokens->nextCode($aliasAt);
+                }
+                $classes[] = array($prefix . '\\' . \trim($name[0], '\\'), $alias);
+            }
+            if (!$tokens->is($i, ',')) {
+                break;
+            }
+            $i = $tokens->nextCode($i);
+        }
+        return $classes;
+    }
+
+    /** @return int|null Index of the `;` ending the statement at $i, or null when it opens a block instead */
+    private function statementEnd(Tokens $tokens, $i)
+    {
+        for ($j = $i + 1, $n = \count($tokens->list); $j < $n; $j++) {
+            if ($tokens->depth[$j] !== $tokens->depth[$i]) {
+                continue;
+            }
+            if ($tokens->is($j, ';')) {
+                return $j;
+            }
+            if ($tokens->is($j, '{') && $tokens->list[$i]['id'] === T_NAMESPACE) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /** @return int Offset just after the line ending of the line $offset is on */
+    private function endOfLine($offset)
+    {
+        $newline = \strpos($this->source, "\n", $offset);
+        return $newline === false ? \strlen($this->source) : $newline + 1;
+    }
+}
+```
+
 `tools/src/Schema/FieldsEntry.php`:
 
 ```php
 <?php
 namespace Anorm\GraphQL\Tools\Schema;
 
-/** One element of a fields array, with the whitespace and comments that lead it. */
+/**
+ * One element of a fields array: whole lines of source, from the start of the line its
+ * leading comments begin on to the end of the line its comma is on.
+ */
 class FieldsEntry
 {
-    /** @var string Exact source text, from after the previous comma to this entry's comma */
+    /** @var string Exact source text of the entry */
     public $text = '';
-    /** @var string|null The GraphQL field name: the first string literal in the entry */
-    public $name = null;
-    /** @var bool true when the entry is led by the marker comment */
+    /** @var string[] Field names the entry defines; empty when none can be read */
+    public $names = array();
+    /** @var bool true when the marker comment is the last thing before the code */
     public $owned = false;
-    /** @var bool true when the entry ends with its own comma */
-    public $hasComma = false;
-    /** @var string Text before the marker comment, or before the code when unowned */
-    public $lead = '';
+    /** @var string Text before the marker line; only meaningful when owned */
+    public $beforeMarker = '';
     /** @var string Indentation of the entry's first line of code */
     public $indent = '';
+    /** @var int|null Offset within $text just after the last code token, when the entry has no comma */
+    public $missingCommaAt = null;
+    /** @var string What follows the comma on its line: a trailing comment, and the line ending */
+    public $afterComma = '';
+
+    /** @return string|null The name that decides where the entry sorts */
+    public function primaryName()
+    {
+        return $this->names ? $this->names[0] : null;
+    }
 }
 ```
 
@@ -4011,7 +5155,7 @@ class FieldsEntry
 <?php
 namespace Anorm\GraphQL\Tools\Schema;
 
-/** The interior of one `'fields' => [ ... ]` array, split into entries. */
+/** The inside of one `'fields' => [ ... ]` array. */
 class FieldsArray
 {
     /** @var int Byte offset just after the opening `[` */
@@ -4020,10 +5164,14 @@ class FieldsArray
     public $end = 0;
     /** @var string Whitespace that starts the line holding the opening `[` */
     public $bracketIndent = '';
+    /** @var string The rest of the opening bracket's line, line ending included */
+    public $head = '';
     /** @var FieldsEntry[] */
     public $entries = array();
-    /** @var string Whatever follows the last entry, before the closing `]` */
+    /** @var string Whatever follows the last entry: comment-only lines, and the indentation of `]` */
     public $tail = '';
+    /** @var bool true for `[]` written on one line */
+    public $emptyOnOneLine = false;
 }
 ```
 
@@ -4034,191 +5182,255 @@ class FieldsArray
 namespace Anorm\GraphQL\Tools\Schema;
 
 /**
- * Finds the `'fields' => [ ... ]` array under a root key of an ApiSchema and splits
- * it into entries, using PHP's own tokenizer so that brackets, strings and comments
- * are never misread. Only token kinds that are identical on PHP 7.4 and 8.x are
- * relied on.
+ * Finds the fields array of the Query or Mutation type in an ApiSchema and splits it
+ * into entries.
+ *
+ * It is deliberately narrow. The array must be reached as
+ * `'query' => new ObjectType([ ... 'fields' => [ ... ] ... ])`, with `'fields'` a direct
+ * key of the ObjectType's config, and it must be written one entry per line. Anything
+ * else is refused with a SchemaShapeException, because a wrong guess here edits the
+ * wrong part of somebody's hand-written file.
  */
 class FieldsArrayLocator
 {
     const MARKER = '// anorm-graphql';
 
     /**
-     * @param string $source PHP source of the schema file
+     * @param string $source
+     * @param Tokens $tokens Of the same source
      * @param string $rootKey 'query' or 'mutation'
-     * @return FieldsArray|null null when the expected structure is not there
+     * @return FieldsArray|null null when the schema has no such root key in the expected form
+     * @throws SchemaShapeException when it is there but not in a shape that is safe to edit
      */
-    public function locate($source, $rootKey)
+    public function locate($source, Tokens $tokens, $rootKey)
     {
-        $tokens = $this->tokens($source);
-        $count = \count($tokens);
-        $rootAt = $this->findKey($tokens, 0, $count, $rootKey);
-        if ($rootAt === null) {
+        $configs = $this->objectTypeConfigs($tokens, $rootKey);
+        if (!$configs) {
             return null;
         }
-        $fieldsAt = $this->findKey($tokens, $rootAt + 1, $count, 'fields');
-        if ($fieldsAt === null) {
-            return null;
+        if (\count($configs) > 1) {
+            throw new SchemaShapeException("'$rootKey' => new ObjectType([...]) appears more than once");
         }
-        $open = $this->nextCode($tokens, $this->nextCode($tokens, $fieldsAt) ?? $count);
-        if ($open === null || $tokens[$open]['text'] !== '[') {
-            return null;
+        $config = $configs[0];
+
+        $opens = array();
+        for ($i = $config + 1; $i < $tokens->closes[$config]; $i++) {
+            if ($tokens->parent[$i] !== $config || !$tokens->isString($i, 'fields')) {
+                continue;
+            }
+            $arrow = $tokens->nextCode($i);
+            if (!$tokens->isId($arrow, T_DOUBLE_ARROW)) {
+                continue;
+            }
+            $open = $tokens->nextCode($arrow);
+            if (!$tokens->is($open, '[')) {
+                throw new SchemaShapeException("'fields' under '$rootKey' is not a literal [ ... ] array");
+            }
+            $opens[] = $open;
         }
-        return $this->split($source, $tokens, $open);
+        if (\count($opens) !== 1) {
+            throw new SchemaShapeException("expected exactly one 'fields' key in the '$rootKey' ObjectType");
+        }
+        return $this->split($source, $tokens, $opens[0], $rootKey);
     }
 
     /**
-     * @return array<int, array{id: int|null, text: string, offset: int}>
+     * Where `'<rootKey>' => new ObjectType([` occurs.
+     *
+     * @return int[] Index of the `[` that opens each config array
      */
-    private function tokens($source)
+    private function objectTypeConfigs(Tokens $tokens, $rootKey)
     {
-        $result = array();
-        $offset = 0;
-        foreach (\token_get_all($source) as $token) {
-            $id = \is_array($token) ? $token[0] : null;
-            $text = \is_array($token) ? $token[1] : $token;
-            $result[] = array('id' => $id, 'text' => $text, 'offset' => $offset);
-            $offset += \strlen($text);
-        }
-        return $result;
-    }
-
-    /** Index of the string literal $key that is followed by `=>`, or null. */
-    private function findKey(array $tokens, $from, $count, $key)
-    {
-        for ($i = $from; $i < $count; $i++) {
-            if ($tokens[$i]['id'] !== T_CONSTANT_ENCAPSED_STRING) {
+        $found = array();
+        foreach ($tokens->list as $i => $token) {
+            if (!$tokens->isString($i, $rootKey)) {
                 continue;
             }
-            if (\substr($tokens[$i]['text'], 1, -1) !== $key) {
+            $arrow = $tokens->nextCode($i);
+            $new = $tokens->isId($arrow, T_DOUBLE_ARROW) ? $tokens->nextCode($arrow) : null;
+            if (!$tokens->isId($new, T_NEW)) {
                 continue;
             }
-            $next = $this->nextCode($tokens, $i);
-            if ($next !== null && $tokens[$next]['id'] === T_DOUBLE_ARROW) {
-                return $i;
+            $name = $tokens->readName($tokens->nextCode($new));
+            if ($name === null || !\preg_match('/(^|\\\\)ObjectType$/', $name[0])) {
+                continue;
+            }
+            $paren = $tokens->isTrivia($name[1]) ? $tokens->nextCode($name[1]) : $name[1];
+            $bracket = $tokens->is($paren, '(') ? $tokens->nextCode($paren) : null;
+            if ($tokens->is($bracket, '[')) {
+                $found[] = $bracket;
             }
         }
-        return null;
+        return $found;
     }
 
-    /** Index of the next token after $i that is not whitespace or a comment. */
-    private function nextCode(array $tokens, $i)
+    private function split($source, Tokens $tokens, $open, $rootKey)
     {
-        $count = \count($tokens);
-        for ($j = $i + 1; $j < $count; $j++) {
-            if (!$this->isTrivia($tokens[$j])) {
-                return $j;
-            }
-        }
-        return null;
-    }
-
-    private function isTrivia(array $token)
-    {
-        return $token['id'] === T_WHITESPACE || $token['id'] === T_COMMENT || $token['id'] === T_DOC_COMMENT;
-    }
-
-    private function split($source, array $tokens, $open)
-    {
+        $close = $tokens->closes[$open];
         $array = new FieldsArray();
-        $array->start = $tokens[$open]['offset'] + 1;
-        $array->bracketIndent = $this->lineIndent($source, $tokens[$open]['offset']);
+        $array->start = $tokens->list[$open]['offset'] + 1;
+        $array->end = $tokens->list[$close]['offset'];
+        $array->bracketIndent = $this->indentOfLine($source, $tokens->list[$open]['offset']);
 
-        $depth = 0;
-        $segment = array();
-        $count = \count($tokens);
-        for ($i = $open + 1; $i < $count; $i++) {
-            $text = $tokens[$i]['text'];
-            $id = $tokens[$i]['id'];
-            if ($id === null && $text === ']' && $depth === 0) {
-                $array->end = $tokens[$i]['offset'];
-                $this->finish($array, $segment);
-                return $array;
+        $interior = \substr($source, $array->start, $array->end - $array->start);
+        if (\strpos($interior, "\n") === false) {
+            if (\trim($interior) !== '') {
+                throw new SchemaShapeException("the '$rootKey' fields array must be written one entry per line");
             }
-            $segment[] = $tokens[$i];
-            if ($id === T_CURLY_OPEN || $id === T_DOLLAR_OPEN_CURLY_BRACES) {
-                $depth++;
-            } elseif ($id === null && ($text === '[' || $text === '(' || $text === '{')) {
-                $depth++;
-            } elseif ($id === null && ($text === ']' || $text === ')' || $text === '}')) {
-                $depth--;
-            } elseif ($id === null && $text === ',' && $depth === 0) {
-                $array->entries[] = $this->entry($segment, true);
-                $segment = array();
+            $array->emptyOnOneLine = true;
+            return $array;
+        }
+
+        $cursor = $this->restOfLine($tokens, $open + 1, $close, $array->start);
+        $this->requireLineEnd($source, $array->start, $cursor, $rootKey);
+        $array->head = \substr($source, $array->start, $cursor[1] - $array->start);
+
+        $i = $cursor[0];
+        $from = $cursor[1];
+        $firstCode = null;
+        $lastCode = null;
+        for (; $i < $close; $i++) {
+            if (!$tokens->isTrivia($i)) {
+                $firstCode = $firstCode === null ? $i : $firstCode;
+                $lastCode = $i;
+            }
+            if ($tokens->is($i, ',') && $tokens->parent[$i] === $open) {
+                $commaEnd = $tokens->list[$i]['offset'] + 1;
+                $cursor = $this->restOfLine($tokens, $i + 1, $close, $commaEnd);
+                $this->requireLineEnd($source, $commaEnd, $cursor, $rootKey);
+                $entry = $this->entry($source, $tokens, $from, $cursor[1], $firstCode);
+                $entry->afterComma = \substr($source, $commaEnd, $cursor[1] - $commaEnd);
+                $array->entries[] = $entry;
+                $from = $cursor[1];
+                $i = $cursor[0] - 1;
+                $firstCode = null;
+                $lastCode = null;
             }
         }
-        return null;
+        if ($firstCode !== null) {
+            // A last entry with no comma after it.
+            $codeEnd = $tokens->list[$lastCode]['offset'] + \strlen($tokens->list[$lastCode]['text']);
+            $cursor = $this->restOfLine($tokens, $lastCode + 1, $close, $codeEnd);
+            $this->requireLineEnd($source, $codeEnd, $cursor, $rootKey);
+            $entry = $this->entry($source, $tokens, $from, $cursor[1], $firstCode);
+            $entry->missingCommaAt = $codeEnd - $from;
+            $entry->afterComma = \substr($source, $codeEnd, $cursor[1] - $codeEnd);
+            $array->entries[] = $entry;
+            $from = $cursor[1];
+        }
+        $array->tail = \substr($source, $from, $array->end - $from);
+        return $array;
     }
 
-    /** The last segment is an entry without a comma, or just the tail before `]`. */
-    private function finish(FieldsArray $array, array $segment)
+    /**
+     * From just after a comma (or the opening bracket), take what else is on that line:
+     * whitespace, a trailing comment, the line ending.
+     *
+     * @return array{0: int, 1: int} Index of the first token not taken, and the offset reached
+     */
+    private function restOfLine(Tokens $tokens, $i, $close, $offset)
     {
-        $hasCode = false;
-        foreach ($segment as $token) {
-            if (!$this->isTrivia($token)) {
-                $hasCode = true;
+        for (; $i < $close; $i++) {
+            $token = $tokens->list[$i];
+            $text = $token['text'];
+            if ($token['id'] === T_WHITESPACE) {
+                $newline = \strpos($text, "\n");
+                if ($newline === false) {
+                    $offset = $token['offset'] + \strlen($text);
+                    continue;
+                }
+                $offset = $token['offset'] + $newline + 1;
+                // The rest of this whitespace, the next line's indentation, stays where it is.
+                return array($newline + 1 === \strlen($text) ? $i + 1 : $i, $offset);
+            }
+            $oneLineComment = $token['id'] === T_COMMENT && \strpos(\rtrim($text, "\r\n"), "\n") === false;
+            if (!$oneLineComment) {
                 break;
             }
+            $offset = $token['offset'] + \strlen($text);
+            if (\substr($text, -1) === "\n") {
+                return array($i + 1, $offset);
+            }
         }
-        if (!$hasCode) {
-            $array->tail = $this->text($segment);
+        return array($i, $offset);
+    }
+
+    /**
+     * @param array{0: int, 1: int} $cursor
+     */
+    private function requireLineEnd($source, $from, array $cursor, $rootKey)
+    {
+        if ($cursor[1] > $from && $source[$cursor[1] - 1] === "\n") {
             return;
         }
-        // Trailing whitespace belongs to the tail, not to the entry.
-        $tail = array();
-        while ($segment && $segment[\count($segment) - 1]['id'] === T_WHITESPACE) {
-            \array_unshift($tail, \array_pop($segment));
-        }
-        $array->entries[] = $this->entry($segment, false);
-        $array->tail = $this->text($tail);
+        throw new SchemaShapeException(
+            "the '$rootKey' fields array must be written one entry per line, with its closing bracket on a line of its own"
+        );
     }
 
-    private function entry(array $segment, $hasComma)
+    private function entry($source, Tokens $tokens, $from, $to, $firstCode)
     {
         $entry = new FieldsEntry();
-        $entry->text = $this->text($segment);
-        $entry->hasComma = $hasComma;
+        $entry->text = \substr($source, $from, $to - $from);
+        $codeOffset = $tokens->list[$firstCode]['offset'];
+        $entry->indent = $this->indentOfLine($source, $codeOffset);
 
-        $lead = '';
-        $markerLead = null;
-        foreach ($segment as $token) {
-            if (!$this->isTrivia($token)) {
-                break;
+        // Owned only if the marker is the last thing before the code, whitespace aside.
+        for ($i = $firstCode - 1; $i >= 0 && $tokens->list[$i]['offset'] >= $from; $i--) {
+            if ($tokens->list[$i]['id'] === T_WHITESPACE) {
+                continue;
             }
-            if ($token['id'] === T_COMMENT && \trim($token['text']) === self::MARKER) {
-                $markerLead = $lead;
+            $isMarker = $tokens->list[$i]['id'] === T_COMMENT && \trim($tokens->list[$i]['text']) === self::MARKER;
+            $lineStart = $this->lineStart($source, $tokens->list[$i]['offset']);
+            if ($isMarker && $lineStart >= $from && \trim(\substr($source, $lineStart, $tokens->list[$i]['offset'] - $lineStart)) === '') {
+                $entry->owned = true;
+                $entry->beforeMarker = \substr($source, $from, $lineStart - $from);
             }
-            $lead .= $token['text'];
+            break;
         }
-        $entry->owned = $markerLead !== null;
-        $entry->lead = $entry->owned ? $markerLead : $lead;
-
-        $newline = \strrpos($lead, "\n");
-        $entry->indent = $newline === false ? '' : \substr($lead, $newline + 1);
-
-        foreach ($segment as $token) {
-            if ($token['id'] === T_CONSTANT_ENCAPSED_STRING) {
-                $entry->name = \substr($token['text'], 1, -1);
-                break;
-            }
-        }
+        $entry->names = $this->names($tokens, $firstCode, $from + \strlen($entry->text));
         return $entry;
     }
 
-    private function text(array $segment)
+    /**
+     * The field name an entry defines: the first string literal, as in
+     * `createField('name', ...)` and `'name' => [...]`, or the value of the `'name'` key
+     * when the entry is itself an array.
+     *
+     * @return string[]
+     */
+    private function names(Tokens $tokens, $firstCode, $endOffset)
     {
-        $text = '';
-        foreach ($segment as $token) {
-            $text .= $token['text'];
+        if ($tokens->is($firstCode, '[')) {
+            for ($i = $firstCode + 1; $i < $tokens->closes[$firstCode]; $i++) {
+                if ($tokens->parent[$i] !== $firstCode || !$tokens->isString($i, 'name')) {
+                    continue;
+                }
+                $arrow = $tokens->nextCode($i);
+                $value = $tokens->isId($arrow, T_DOUBLE_ARROW) ? $tokens->nextCode($arrow) : null;
+                return $tokens->isString($value) ? array($tokens->stringValue($value)) : array();
+            }
+            return array();
         }
-        return $text;
+        for ($i = $firstCode, $n = \count($tokens->list); $i < $n && $tokens->list[$i]['offset'] < $endOffset; $i++) {
+            if ($tokens->isString($i)) {
+                return array($tokens->stringValue($i));
+            }
+        }
+        return array();
     }
 
-    private function lineIndent($source, $offset)
+    private function lineStart($source, $offset)
     {
-        $lineStart = \strrpos(\substr($source, 0, $offset), "\n");
-        $lineStart = $lineStart === false ? 0 : $lineStart + 1;
-        \preg_match('/^[ \t]*/', \substr($source, $lineStart), $m);
+        $newline = $offset === 0 ? false : \strrpos($source, "\n", $offset - \strlen($source) - 1);
+        return $newline === false ? 0 : $newline + 1;
+    }
+
+    /** @return string The whitespace a line starts with, when that is all that precedes $offset on it */
+    private function indentOfLine($source, $offset)
+    {
+        $start = $this->lineStart($source, $offset);
+        \preg_match('/^[ \t]*/', \substr($source, $start, $offset - $start), $m);
         return $m[0];
     }
 }
@@ -4232,14 +5444,14 @@ namespace Anorm\GraphQL\Tools\Schema;
 
 class SchemaEditResult
 {
-    /** @var string The source after editing; the input unchanged when $failed */
+    /** @var string The source after editing; the input, byte for byte, when $failed */
     public $source = '';
-    /** @var bool true when the expected structure was not found and nothing was changed */
+    /** @var bool true when the file was not in a shape the editor is sure of, and nothing was changed */
     public $failed = false;
-    /** @var string[] One line each: collisions, orphans, or why the edit failed */
+    /** @var string[] One line each: collisions, orphans, skipped entities, or why the edit failed */
     public $messages = array();
-    /** @var string[] The entries to paste by hand, filled only when $failed */
-    public $paste = array();
+    /** @var array<string, string[]> 'query' and 'mutation' => entries to paste by hand; filled only when $failed */
+    public $paste = array('query' => array(), 'mutation' => array());
 }
 ```
 
@@ -4254,30 +5466,21 @@ use Anorm\GraphQL\Tools\TypeInfo;
 /**
  * Maintains the generated Query and Mutation entries of an existing ApiSchema.php.
  *
- * Only entries led by the marker comment are ever rewritten. Everything else is
- * copied through byte for byte, and when the file is not shaped as expected the
- * source is returned untouched.
+ * Only entries whose code is led directly by the marker comment are ever rewritten.
+ * Everything else is copied through byte for byte. When the file is not shaped as
+ * expected, or the result would not parse, the source is returned untouched.
  */
 class SchemaEditor
 {
-    const RUNTIME_IMPORTS = array(
-        'Anorm\GraphQL\GraphQLUtils',
-        'Anorm\GraphQL\Type\MangoInput',
-        'GraphQL\Type\Definition\Type',
-    );
-
-    /** @var FieldsArrayLocator */
-    private $locator;
+    const GRAPHQL_UTILS = 'Anorm\GraphQL\GraphQLUtils';
+    const MANGO_INPUT = 'Anorm\GraphQL\Type\MangoInput';
+    const TYPE = 'GraphQL\Type\Definition\Type';
 
     /** @var string Namespace of the generated Types, no trailing backslash */
     private $typeNamespace;
 
-    /** @var array<string, bool> Field names that belong to an entity that still exists */
-    private $known = array();
-
     public function __construct($typeNamespace)
     {
-        $this->locator = new FieldsArrayLocator();
         $this->typeNamespace = \trim($typeNamespace, '\\');
     }
 
@@ -4285,10 +5488,12 @@ class SchemaEditor
      * @param string $source
      * @param TypeInfo[] $infos The entities of this run
      * @param string[] $knownEntities Every entity the models produce, including those
-     *                                this run leaves out; their entries are not orphans
+     *                                this run leaves out; their entries are not orphans.
+     *                                Required: leaving it out would call every marked
+     *                                entry of every other entity an orphan.
      * @return SchemaEditResult
      */
-    public function edit($source, array $infos, array $knownEntities = array())
+    public function edit($source, array $infos, array $knownEntities)
     {
         $result = new SchemaEditResult();
         $result->source = $source;
@@ -4296,216 +5501,258 @@ class SchemaEditor
             return $result;
         }
 
-        $this->known = array();
-        foreach ($knownEntities as $entity) {
-            foreach (array('List', 'Delete', 'Upsert') as $suffix) {
-                $this->known[\lcfirst($entity) . $suffix] = true;
-            }
-        }
-
         $desired = array('query' => array(), 'mutation' => array());
         foreach ($infos as $info) {
-            foreach ($this->entriesFor($info) as $rootKey => $entries) {
-                $desired[$rootKey] += $entries;
-            }
-        }
-
-        foreach (array('query', 'mutation') as $rootKey) {
-            if ($this->locator->locate($source, $rootKey) === null) {
-                $result->failed = true;
-                $result->messages[] = "ApiSchema not changed: could not find a literal 'fields' => [ ... ] array under '$rootKey'";
-            }
-        }
-        if ($result->failed) {
-            foreach ($desired as $entries) {
-                foreach ($entries as $lines) {
-                    $result->paste[] = \implode("\n", $lines);
+            foreach ($this->fieldNames($info) as $rootKey => $kinds) {
+                foreach ($kinds as $kind => $name) {
+                    if (isset($desired['query'][$name]) || isset($desired['mutation'][$name])) {
+                        $result->messages[] = "skipped: '{$info->entity}' would define '$name', which another entity already defines";
+                        continue;
+                    }
+                    $desired[$rootKey][$name] = array($kind, $info);
                 }
             }
-            return $result;
+        }
+        $known = array();
+        foreach ($knownEntities as $entity) {
+            foreach (array('List', 'Delete', 'Upsert') as $suffix) {
+                $known[\lcfirst($entity) . $suffix] = true;
+            }
+        }
+        foreach ($infos as $info) {
+            // For an entity of this run, what it produces now is known exactly.
+            foreach (array('List', 'Delete', 'Upsert') as $suffix) {
+                unset($known[$info->fieldPrefix() . $suffix]);
+            }
         }
 
-        $edited = $source;
-        foreach (array('query', 'mutation') as $rootKey) {
-            // Located afresh each time: the first edit moves every later offset.
-            $array = $this->locator->locate($edited, $rootKey);
-            $edited = $this->editArray($edited, $array, $desired[$rootKey], $result);
+        try {
+            $tokens = new Tokens($source);
+            $locator = new FieldsArrayLocator();
+            $arrays = array();
+            foreach (array('query', 'mutation') as $rootKey) {
+                $arrays[$rootKey] = $locator->locate($source, $tokens, $rootKey);
+                $needed = $rootKey === 'query' || $desired['mutation'];
+                if ($arrays[$rootKey] === null && $needed) {
+                    throw new SchemaShapeException(
+                        "could not find '$rootKey' => new ObjectType([ ... 'fields' => [ ... ] ... ])"
+                    );
+                }
+            }
+            $imports = new ImportTable($source, $tokens);
+            // Whichever line ending the file mostly uses; one stray CRLF does not make a CRLF file.
+            $crlf = \substr_count($source, "\r\n");
+            $eol = $crlf > \substr_count($source, "\n") - $crlf ? "\r\n" : "\n";
+
+            $messages = array();
+            $splices = array();
+            foreach (array('query', 'mutation') as $rootKey) {
+                if ($arrays[$rootKey] === null) {
+                    continue;
+                }
+                $interior = $this->editArray($arrays[$rootKey], $desired[$rootKey], $known, $imports, $eol, $messages);
+                $array = $arrays[$rootKey];
+                $splices[] = array($array->start, $array->end - $array->start, $interior);
+            }
+            $splices = \array_merge($splices, $imports->splices($eol));
+            $edited = $this->apply($source, $splices);
+            // Belt and braces: whatever went wrong above, never write a file that does not parse.
+            $problem = $this->parseError($edited);
+            if ($problem !== null) {
+                throw new SchemaShapeException(
+                    $this->parseError($source) === null
+                        ? 'internal error, please report it: the edit would not have parsed (' . $problem . ')'
+                        : 'the file does not parse under PHP ' . PHP_VERSION . ' (' . $problem . ')'
+                );
+            }
+        } catch (SchemaShapeException $e) {
+            return $this->failure($result, $desired, $e->getMessage());
         }
-        $result->source = $this->addImports($edited, $this->importsFor($infos));
+
+        $result->source = $edited;
+        $result->messages = \array_merge($result->messages, $messages);
         return $result;
     }
 
+    /** @return string|null Why $code does not parse, or null when it does */
+    private function parseError($code)
+    {
+        try {
+            $parsed = \token_get_all($code, TOKEN_PARSE);
+            unset($parsed);
+            return null;
+        } catch (\ParseError $e) {
+            return $e->getMessage();
+        }
+    }
+
     /**
-     * @return array<string, array<string, string[]>> root key => field name => lines of code
+     * @return array<string, array<string, string>> root key => kind ('List', 'Delete', 'Upsert') => field name
      */
-    public function entriesFor(TypeInfo $info)
+    private function fieldNames(TypeInfo $info)
     {
         $prefix = $info->fieldPrefix();
-        $type = $info->entity . 'Type';
-        $input = $info->entity . 'Input';
-        $entries = array('query' => array(), 'mutation' => array());
-        $entries['query'][$prefix . 'List'] = array(
-            "GraphQLUtils::createListField('{$prefix}List', \$this->type({$type}::class), 'resolveList')",
-            "    ->addArgument('query', \$this->type(MangoInput::class))",
-            "    ->build(),",
-        );
-        if ($info->readOnly) {
-            return $entries;
+        $names = array('query' => array('List' => $prefix . 'List'), 'mutation' => array());
+        if (!$info->readOnly) {
+            $names['mutation'] = array('Delete' => $prefix . 'Delete', 'Upsert' => $prefix . 'Upsert');
         }
-        $entries['mutation'][$prefix . 'Delete'] = array(
-            "GraphQLUtils::createListField('{$prefix}Delete', \$this->type({$type}::class), 'resolveDelete')",
-            "    ->addArgument('id', Type::nonNull(Type::listOf(Type::nonNull(Type::id()))))",
-            "    ->build(),",
-        );
-        $entries['mutation'][$prefix . 'Upsert'] = array(
-            "GraphQLUtils::createListField('{$prefix}Upsert', \$this->type({$type}::class), 'resolveUpsert')",
-            "    ->addArgument('input', Type::nonNull(Type::listOf(Type::nonNull(\$this->type({$input}::class)))))",
-            "    ->build(),",
-        );
-        return $entries;
+        return $names;
     }
 
     /**
-     * @param TypeInfo[] $infos
+     * The lines of one entry, without indentation and ending in its comma.
+     *
+     * @param string $kind 'List', 'Delete' or 'Upsert'
+     * @param callable $name Turns a fully qualified class name into the text to write for it
      * @return string[]
      */
-    private function importsFor(array $infos)
+    public function entryLines($kind, TypeInfo $info, callable $name)
     {
-        $imports = self::RUNTIME_IMPORTS;
-        foreach ($infos as $info) {
-            $base = $this->typeNamespace . '\\' . $info->entity . '\\' . $info->entity;
-            $imports[] = $base . 'Type';
-            if (!$info->readOnly) {
-                $imports[] = $base . 'Input';
-            }
+        $field = $info->fieldPrefix() . $kind;
+        $base = $this->typeNamespace . '\\' . $info->entity . '\\' . $info->entity;
+        $utils = $name(self::GRAPHQL_UTILS);
+        $type = $name($base . 'Type');
+        $first = "{$utils}::createListField('$field', \$this->type({$type}::class), 'resolve$kind')";
+        if ($kind === 'List') {
+            $argument = "->addArgument('query', \$this->type(" . $name(self::MANGO_INPUT) . '::class))';
+        } elseif ($kind === 'Delete') {
+            $t = $name(self::TYPE);
+            $argument = "->addArgument('id', {$t}::nonNull({$t}::listOf({$t}::nonNull({$t}::id()))))";
+        } else {
+            $t = $name(self::TYPE);
+            $input = $name($base . 'Input');
+            $argument = "->addArgument('input', {$t}::nonNull({$t}::listOf({$t}::nonNull(\$this->type({$input}::class)))))";
         }
-        return $imports;
+        return array($first, '    ' . $argument, '    ->build(),');
     }
 
     /**
-     * @param array<string, string[]> $desired field name => lines of code
+     * @param array<string, array{0: string, 1: TypeInfo}> $desired field name => kind and entity
+     * @param array<string, bool> $known Field names of entities that exist but are not in this run
+     * @param string[] $messages
+     * @return string The new inside of the array
      */
-    private function editArray($source, FieldsArray $array, array $desired, SchemaEditResult $result)
+    private function editArray(FieldsArray $array, array $desired, array $known, ImportTable $imports, $eol, array &$messages)
     {
-        $segments = array();
-        $names = array();
-        $commaless = null;
+        $resolve = array($imports, 'resolve');
+        $texts = array();
+        $needsComma = array();
+        $sortNames = array();
+        $indents = array();
+        $handWritten = array();
+        foreach ($array->entries as $entry) {
+            if (!$entry->owned) {
+                $handWritten = \array_merge($handWritten, $entry->names);
+            }
+        }
+        \ksort($desired, SORT_STRING);
+
+        $written = array();
         foreach ($array->entries as $entry) {
             $text = $entry->text;
-            if ($entry->owned && $entry->name !== null && isset($desired[$entry->name])) {
-                $text = $this->render($entry->lead, $entry->indent, $desired[$entry->name]);
-            } elseif ($entry->owned && !isset($this->known[(string) $entry->name])) {
-                $result->messages[] = "orphaned: '{$entry->name}' is marked as generated but no model produces it";
-            } elseif ($entry->name !== null && isset($desired[$entry->name])) {
-                $result->messages[] = "collision: '{$entry->name}' already exists and is not marked as generated; left alone";
+            $name = $entry->primaryName();
+            $rewrite = $entry->owned && $name !== null && isset($desired[$name]) && !\in_array($name, $handWritten, true);
+            if ($rewrite && isset($written[$name])) {
+                $messages[] = "duplicate: '$name' is marked as generated more than once; the later entry was left alone";
+                $rewrite = false;
+            } elseif ($rewrite) {
+                $lines = $this->entryLines($desired[$name][0], $desired[$name][1], $resolve);
+                // What followed the comma, a trailing comment perhaps, stays.
+                $text = $entry->beforeMarker . $this->render($entry->indent, $lines, $eol, $entry->afterComma);
+                $written[$name] = true;
+            } elseif ($entry->owned && $name === null) {
+                $messages[] = 'orphaned: an entry is marked as generated but its field name cannot be read';
+            } elseif ($entry->owned && !isset($desired[$name]) && !isset($known[$name])) {
+                $messages[] = "orphaned: '$name' is marked as generated but no model produces it";
             }
-            if (!$entry->hasComma) {
-                $commaless = $entry->name;
-            }
-            $segments[] = $text;
-            $names[] = $entry->name;
+            // An entry kept as it was, with no comma after it, needs one if it stops being last.
+            $needsComma[] = !$rewrite && $entry->missingCommaAt !== null ? $entry->missingCommaAt : null;
+            $texts[] = $text;
+            $sortNames[] = $name;
+            $indents[] = $entry->indent;
         }
 
-        $existing = \array_flip(\array_filter($names, 'is_string'));
-        $missing = \array_diff_key($desired, $existing);
-        \ksort($missing, SORT_STRING);
-
         $defaultIndent = $array->entries ? $array->entries[0]->indent : $array->bracketIndent . '    ';
-        foreach ($missing as $name => $lines) {
-            $at = \count($segments);
-            foreach ($names as $i => $existingName) {
-                if ($existingName !== null && \strcmp($existingName, $name) > 0) {
+        foreach ($desired as $name => $spec) {
+            if (isset($written[$name])) {
+                continue;
+            }
+            if (\in_array($name, $handWritten, true)) {
+                $messages[] = "collision: '$name' already exists and is not marked as generated; left alone";
+                continue;
+            }
+            $at = \count($texts);
+            foreach ($sortNames as $i => $existing) {
+                if ($existing !== null && \strcmp($existing, $name) > 0) {
                     $at = $i;
                     break;
                 }
             }
             $indent = $defaultIndent;
-            if (isset($array->entries[$at])) {
-                $indent = $array->entries[$at]->indent;
-            } elseif ($array->entries) {
-                $indent = $array->entries[\count($array->entries) - 1]->indent;
+            if (isset($indents[$at])) {
+                $indent = $indents[$at];
+            } elseif ($indents) {
+                $indent = $indents[\count($indents) - 1];
             }
-            \array_splice($segments, $at, 0, array($this->render("\n", $indent, $lines)));
-            \array_splice($names, $at, 0, array($name));
-            // Keep $array->entries aligned with $segments for the indent lookups above.
-            $placeholder = new FieldsEntry();
-            $placeholder->indent = $indent;
-            \array_splice($array->entries, $at, 0, array($placeholder));
+            $lines = $this->entryLines($spec[0], $spec[1], $resolve);
+            \array_splice($texts, $at, 0, array($this->render($indent, $lines, $eol, $eol)));
+            \array_splice($needsComma, $at, 0, array(null));
+            \array_splice($sortNames, $at, 0, array($name));
+            \array_splice($indents, $at, 0, array($indent));
         }
 
-        // A hand-written last entry may have had no comma; it needs one if it is no longer last.
-        $last = \count($segments) - 1;
-        foreach ($names as $i => $existingName) {
-            if ($commaless !== null && $existingName === $commaless && $i < $last && \substr(\rtrim($segments[$i]), -1) !== ',') {
-                $segments[$i] .= ',';
+        foreach ($needsComma as $i => $at) {
+            if ($at !== null && $i < \count($texts) - 1) {
+                $texts[$i] = \substr($texts[$i], 0, $at) . ',' . \substr($texts[$i], $at);
             }
         }
 
-        $tail = $array->tail;
-        if ($segments && \strpos($tail, "\n") === false) {
-            $tail = "\n" . $array->bracketIndent . $tail;
+        if ($array->emptyOnOneLine) {
+            return $texts ? $eol . \implode('', $texts) . $array->bracketIndent : '';
         }
-        return \substr($source, 0, $array->start) . \implode('', $segments) . $tail . \substr($source, $array->end);
+        return $array->head . \implode('', $texts) . $array->tail;
     }
 
     /**
-     * @param string $lead Whitespace before the marker comment, ending at the marker's indentation
      * @param string[] $lines
+     * @param string $afterComma What follows the entry's comma: normally just the line ending
      */
-    private function render($lead, $indent, array $lines)
+    private function render($indent, array $lines, $eol, $afterComma)
     {
-        if (\strpos($lead, "\n") === false) {
-            $lead = "\n" . $indent;
-        } elseif (\substr($lead, -1) === "\n") {
-            $lead .= $indent;
-        }
-        return $lead . FieldsArrayLocator::MARKER . "\n" . $indent . \implode("\n" . $indent, $lines);
+        return $indent . FieldsArrayLocator::MARKER . $eol . $indent . \implode($eol . $indent, $lines) . $afterComma;
     }
 
     /**
-     * Add each missing `use` line in alphabetical position. Nothing is ever removed.
-     * Line based on purpose: PHP 7.4 and 8.x tokenize qualified names differently.
-     *
-     * @param string[] $imports Fully qualified class names
+     * @param array<int, array{0: int, 1: int, 2: string}> $splices Offsets are into $source as given
      */
-    private function addImports($source, array $imports)
+    private function apply($source, array $splices)
     {
-        \sort($imports, SORT_STRING);
-        foreach ($imports as $import) {
-            $lines = \explode("\n", $source);
-            $uses = array();
-            $namespaceLine = null;
-            foreach ($lines as $i => $line) {
-                if (\preg_match('/^\s*(abstract\s+|final\s+)?class\s/', $line)) {
-                    break;
-                }
-                if (\preg_match('/^namespace\s/', $line)) {
-                    $namespaceLine = $i;
-                }
-                if (\preg_match('/^use\s+\\\\?([\w\\\\]+)(\s+as\s+\w+)?\s*;/', $line, $m)) {
-                    $uses[$i] = $m[1];
-                }
-            }
-            if (\in_array($import, $uses, true)) {
-                continue;
-            }
-            $newLine = 'use ' . $import . ';';
-            if (!$uses) {
-                $at = $namespaceLine === null ? 1 : $namespaceLine + 1;
-                \array_splice($lines, $at, 0, array('', $newLine));
-            } else {
-                $at = \max(\array_keys($uses)) + 1;
-                foreach ($uses as $i => $existing) {
-                    if (\strcmp($existing, $import) > 0) {
-                        $at = $i;
-                        break;
-                    }
-                }
-                \array_splice($lines, $at, 0, array($newLine));
-            }
-            $source = \implode("\n", $lines);
+        \usort($splices, function ($a, $b) {
+            return $b[0] <=> $a[0];
+        });
+        foreach ($splices as $splice) {
+            $source = \substr($source, 0, $splice[0]) . $splice[2] . \substr($source, $splice[0] + $splice[1]);
         }
         return $source;
+    }
+
+    /**
+     * @param array<string, array<string, array{0: string, 1: TypeInfo}>> $desired
+     */
+    private function failure(SchemaEditResult $result, array $desired, $why)
+    {
+        $result->failed = true;
+        $result->messages[] = 'ApiSchema not changed: ' . $why;
+        $fullyQualified = function ($fqcn) {
+            return '\\' . $fqcn;
+        };
+        foreach ($desired as $rootKey => $entries) {
+            foreach ($entries as $spec) {
+                $result->paste[$rootKey][] = FieldsArrayLocator::MARKER . "\n"
+                    . \implode("\n", $this->entryLines($spec[0], $spec[1], $fullyQualified));
+            }
+        }
+        return $result;
     }
 }
 ```
@@ -4574,7 +5821,7 @@ PHP;
 - [ ] **Step 5: Run the tests to see them pass**
 
 Run: `docker/anorm-graphql test test/tools/Schema`
-Expected: `OK (6 tests, ...)`
+Expected: `OK (58 tests, ...)`. Then run the same directory on PHP 8 if an 8.x image is to hand, because the tokenizers differ: `docker run --rm -u $(id -u):$(id -g) -v "$PWD":"$PWD" -w "$PWD" php:8.3-cli php vendor/bin/phpunit -c phpunit-no-coverage.xml test/tools/Schema` → also `OK (58 tests, ...)`.
 
 If a whole-file comparison fails, save the actual output and diff it rather than reading PHPUnit's rendering:
 
@@ -5056,7 +6303,6 @@ class TypeMakerOptions
 <?php
 namespace Anorm\GraphQL\Tools;
 
-use Anorm\GraphQL\Tools\Schema\FieldsArrayLocator;
 use Anorm\GraphQL\Tools\Schema\SchemaEditor;
 use Anorm\GraphQL\Tools\Schema\SchemaScaffolder;
 use Anorm\GraphQL\Tools\Writer\InputBaseWriter;
@@ -5186,8 +6432,10 @@ class TypeMaker
         $lines = $result->messages;
         if ($result->failed) {
             $lines[] = 'Add these entries to ' . $o->schemaPath . ' by hand, in alphabetical order:';
-            foreach ($result->paste as $entry) {
-                $lines[] = FieldsArrayLocator::MARKER . "\n" . $entry;
+            foreach ($result->paste as $rootKey => $entries) {
+                foreach ($entries as $entry) {
+                    $lines[] = "in the '$rootKey' fields array:\n" . $entry;
+                }
             }
             return $lines;
         }
@@ -5257,7 +6505,7 @@ class TypeMaker
 - [ ] **Step 4: Run the tests to see them pass**
 
 Run: `docker/anorm-graphql test --testsuite tools`
-Expected: `OK (37 tests, ...)`
+Expected: `OK (89 tests, ...)`
 
 - [ ] **Step 5: Write the CLI**
 
@@ -5835,7 +7083,7 @@ Expected: `OK (44 tests, ...)`
 - [ ] **Step 5: Run everything, with quality**
 
 Run: `docker/anorm-graphql ci`
-Expected: all suites pass (92 tests), phpcs clean, phpstan `[OK] No errors`.
+Expected: all suites pass (144 tests), phpcs clean, phpstan `[OK] No errors`.
 
 - [ ] **Step 6: Commit**
 
@@ -5859,7 +7107,7 @@ git commit -m "feat: ModelTypeTestCase, proven end to end"
 
 - [ ] **Step 1: Write `README.md`** with these sections, in this order:
   1. **What it is** — two sentences, from spec §1.
-  2. **Install** — `composer require saygoweb/anorm-graphql`. State the supported range: PHP `^7.4 || ^8.0`, `webonyx/graphql-php ^15.32.3`, `php-di/php-di ^6.0`, `saygoweb/anorm ^3.2`. Say plainly why webonyx 14 is not supported (three DoS advisories, never fixed in 14.x) and that `simpod/graphql-utils` is not needed: `Anorm\GraphQL\Builder\FieldBuilder` and `ObjectBuilder` offer the same calls, so a project moving from simpod changes its `use` lines.
+  2. **Install** — `composer require saygoweb/anorm-graphql`. State the supported range: PHP `^7.4 || ^8.0`, `webonyx/graphql-php ^15.32.3`, `php-di/php-di ^6.0`, `saygoweb/anorm ^3.2.1`. Say plainly why webonyx 14 is not supported (three DoS advisories, never fixed in 14.x) and that `simpod/graphql-utils` is not needed: `Anorm\GraphQL\Builder\FieldBuilder` and `ObjectBuilder` offer the same calls, so a project moving from simpod changes its `use` lines.
   3. **Quick start** — `vendor/bin/anorm-graphql.php make -m src/Model -n 'Api\Model' -o src/GraphQL/Type -t 'Api\GraphQL\Type' -s src/GraphQL/ApiSchema.php --schema-ns 'Api\GraphQL'`, then the report it prints (paste a real one from running against `test/Fixtures/Model`).
   4. **What you get** — the GraphQL surface from spec §2 and the file table from spec §5.1, stating which files are regenerated and which are yours.
   5. **Options** — the table from spec §6.

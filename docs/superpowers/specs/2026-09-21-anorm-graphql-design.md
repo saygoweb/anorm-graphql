@@ -112,6 +112,9 @@ saygoweb/anorm-graphql
     Schema/SchemaEditor.php
     Schema/SchemaScaffolder.php
     Schema/FieldsArrayLocator.php
+    Schema/Tokens.php               (revised) tokens, offsets, depth, brackets; same on 7.4 and 8.x
+    Schema/ImportTable.php          (revised) what `use` binds; import, or fully qualify
+    Schema/SchemaShapeException.php (revised) "not a shape I am sure of"
     Schema/FieldsArray.php
     Schema/FieldsEntry.php
     Schema/SchemaEditResult.php
@@ -126,7 +129,9 @@ saygoweb/anorm-graphql
 
 `composer.json`:
 
-- `require` *(revised twice)*: `php: ^7.4 || ^8.0`, `saygoweb/anorm: ^3.2`,
+- `require` *(revised)*: `php: ^7.4 || ^8.0`, `saygoweb/anorm: ^3.2.1` (3.2.1 binds the key
+  in `read()` and `write()`, advisory GHSA-xc47-9hw7-px38; requiring it means this
+  package cannot be installed beside a vulnerable Anorm),
   `webonyx/graphql-php: ^15.32.3`, `php-di/php-di: ^6.0`,
   `wp-cli/php-cli-tools: ^0.11.10`. **No `simpod/graphql-utils`.**
 
@@ -154,8 +159,8 @@ saygoweb/anorm-graphql
 - Both `src/` and `tools/src/` are in `autoload`, as in Anorm, so the binary works
   when installed as a dependency.
 
-`saygoweb/anorm ^3.2` is sufficient: `Anorm\Schema\PropertyType` and
-`Anorm\Tools\ModelLocator` are both in the tagged `v3.2.0`.
+`Anorm\Schema\PropertyType` and `Anorm\Tools\ModelLocator`, which the generator relies
+on, have both been there since `v3.2.0`.
 
 The generator is a separate binary rather than a subcommand of `anorm`, so Anorm
 stays free of any GraphQL dependency.
@@ -467,6 +472,25 @@ constructor does query will throw; `ModelLocator` already reports that as a skip
 This is the only place the tool edits hand-written code, and is tested accordingly
 (section 8.1).
 
+*(revised after Gate B)* The first implementation was reviewed adversarially and did not
+survive: it scanned freely for `'query' =>`, compared imports by class rather than by the
+short name PHP binds, and split entries at commas. It wrote a file that did not compile,
+put entries into an unrelated constant, put mutations into the Query array, and
+miscounted brackets around PHP 8 attributes. Its internals were rewritten. What follows
+describes the rewrite; where it differs from the original design the difference is
+marked. Two rules came out of it that override everything else in this section:
+
+1. **Never write a file that does not compile, and never change what a hand-written
+   reference means.** A class is imported only when its short name is free in the file:
+   bound by no import (grouped and aliased imports included), declared by no class in the
+   file, and used unqualified nowhere in it, including as the first part of a qualified
+   name such as `Type\Action\ActionType`. Otherwise the generated entry names the class
+   in full (`\GraphQL\Type\Definition\Type::nonNull(...)`), which always works. If the
+   imports cannot be read with confidence (a `use` statement not fully understood, a
+   braced namespace, several namespaces in one file) nothing is imported and everything
+   is fully qualified.
+2. **When unsure, change nothing.** See 7.3.
+
 ### 7.1 Behaviour
 
 **File absent.** It is scaffolded once: a `Schema` subclass in `--schema-ns` taking a
@@ -513,26 +537,47 @@ Rules:
 - **Name collisions.** If an unmarked entry already defines a field name, that field
   is skipped and the summary says so. This makes a run against an existing schema
   safe.
-- **Imports.** Missing `use` lines for the Type, the Input, `GraphQLUtils`,
-  `MangoInput` and `GraphQL\Type\Definition\Type` are inserted in alphabetical
-  position. Imports are never removed.
+- **Imports** *(revised)*. A missing `use` line is added only under rule 1 above, and
+  only for an entry that was actually written. It goes after any `declare` and
+  `namespace`, in alphabetical position when every existing import is a simple
+  one-line `use`, otherwise after the last one. Imports are never removed.
 - **Removed models.** Owned entries for a model that no longer exists are reported,
   not deleted, consistent with orphaned files. *(revised)* A model merely left out of
   this run by `--only` still exists: the editor is given every known entity, and
   reports none of their entries.
-- **Indentation** of inserted entries copies that of the neighbouring entry.
+- **Indentation** of inserted entries copies that of the neighbouring entry, and
+  *(revised)* line endings follow whichever the file mostly uses.
+- **Owned means directly led by the marker** *(revised)*. If anything but whitespace
+  sits between the marker and the entry's code, a note the developer added for
+  instance, the entry is treated as hand-written. A trailing comment on the same line
+  as an entry's comma belongs to that entry and stays with it, including on an owned
+  entry that is rewritten.
+- **Field names** *(revised)*. An entry's name is its first string literal, as in
+  `createField('name', ...)` and `'name' => [...]`, or the value of the `'name'` key when
+  the entry is itself an array. Two entities that would define the same field name,
+  and the same name marked as generated twice, are reported.
 - **Idempotent.** A second run with no model changes leaves the file byte-identical.
 
 ### 7.2 Parsing
 
-PHP's built-in `token_get_all`. Tokens give exact bracket depth and exact string and
-comment boundaries, so `FieldsArrayLocator` can reliably:
+*(revised)* PHP's built-in `token_get_all`, wrapped by `Tokens`, which gives every token
+its byte offset, its bracket depth, its enclosing bracket and the matching close, and
+gives the same answers on PHP 7.4 and 8.x. The two tokenizers differ where it matters:
+on 8.x an attribute `#[` opens a bracket and a qualified name is one token; on 7.4 an
+attribute is a comment and a name is several tokens, possibly with whitespace between
+them. The schema tests run on both.
 
-1. find the `'query'` and `'mutation'` keys, and within each the `'fields'` array
-   literal;
-2. split that array into entries at depth-0 commas;
-3. read each entry's field name, the first string literal in the entry;
-4. note whether the entry is preceded by the marker comment.
+`FieldsArrayLocator` is deliberately narrow:
+
+1. A fields array is reached only as `'query' => new ObjectType([ ... ])` (or
+   `'mutation' => ...`), with `'fields' => [` a **direct** key of that config array. A
+   stray `'query' =>` elsewhere in the file, or a nested ObjectType's `'fields'`, is never
+   mistaken for it. More than one match is ambiguous.
+2. The array must be written one entry per line, with its closing bracket on a line of
+   its own. An entry then owns whole lines: its leading comments, its code, its comma,
+   and whatever else is on the comma's line.
+3. A last entry with no comma gets one, placed before any trailing comment, when it
+   stops being last.
 
 Every byte the generator does not own is copied through untouched. `nikic/php-parser`
 with its format-preserving printer would also work, but is a heavy dependency for
@@ -541,9 +586,15 @@ inserting lines into two arrays.
 ### 7.3 Failing safe
 
 If either `fields` array cannot be found in the expected shape (fields built by a
-method call, merged arrays, a non-literal), the generator changes nothing in that
-file, names the structure it was looking for, and prints the entries to paste
-instead. Types and tests are still written.
+method call, a closure, `array()`, merged arrays, entries sharing a line, an ambiguous
+file), the generator changes nothing in that file, says what it was looking for, and
+prints the entries to paste, fully qualified and grouped by the array they belong in.
+Types and tests are still written.
+
+*(revised)* A schema with no `'mutation'` type is fine when no mutation entry is wanted,
+that is, when every entity of the run is read-only. As a last guard the result is parsed
+before it is returned; if it would not parse, nothing is written, and the message says
+whether the file itself does not parse under the running PHP or the editor is at fault.
 
 ## 8. Testing
 
