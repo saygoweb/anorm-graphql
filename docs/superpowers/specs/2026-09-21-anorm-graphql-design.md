@@ -650,8 +650,9 @@ A generated test is configuration only:
 class ClientTypeTest extends TestCase   // the project's tests/GraphQL/TestCase.php
 {
     protected function typeClass(): string { return ClientType::class; }
+    protected function inputClass(): ?string { return ClientInput::class; }   // null when read-only (revised)
     protected function entityName(): string { return 'client'; }
-    protected function isReadOnly(): bool { return false; }
+    protected function keyField(): string { return 'id'; }
     protected function expectedFieldTypes(): array
     {
         return ['id' => 'ID!', 'resellerId' => 'ID', 'name' => 'String', 'creditCents' => 'Int'];
