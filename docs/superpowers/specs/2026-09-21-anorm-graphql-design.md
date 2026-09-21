@@ -119,6 +119,7 @@ saygoweb/anorm-graphql
     Schema/FieldsEntry.php
     Schema/SchemaEditResult.php
   test/
+    TestEnvironment.php, TempDir.php, SchemaProbe.php    shared by the suites (revised)
     tools/          no database
     runtime/        no database
     integration/    database
@@ -678,16 +679,25 @@ Decisions:
    abstract. The generator scaffolds `tests/GraphQL/TestCase.php` once, implementing
    both with clearly marked placeholders; it is then the project's file. Each project
    bootstraps its container differently, and a guess would be wrong somewhere.
-2. **Cleanup is by rollback, not truncation.** `setUp` begins a transaction on the
+2. *(revised after Gate D)* **A table that cannot roll back is not written to.**
+   Rollback only cleans up where the table's storage engine has transactions. On a
+   MyISAM table it does nothing, and a test's rows would stay in a real database for
+   good; FrontAccounting's schema has historically used MyISAM. So before it writes,
+   the lifecycle test asks MySQL or MariaDB whether the Type's table has transactions
+   (`information_schema.ENGINES.TRANSACTIONS`), and if not it skips itself and says why.
+   A project may override `allowNonTransactionalTables()` to accept the consequences.
+   The check covers the Type's own table, on MySQL and MariaDB. `ModelType::tableName()`
+   exists so that the test case can ask.
+3. **Cleanup is by rollback, not truncation.** `setUp` begins a transaction on the
    container's PDO and `tearDown` rolls it back. `GraphQLCudTestCase` truncates
    tables, which is dangerous if a test configuration ever points at a real
    FrontAccounting company database. This is why `ModelType` uses savepoints (4.3).
-3. *(revised after Gate C)* **An update that is not tested says so.** When
+4. *(revised after Gate C)* **An update that is not tested says so.** When
    `sampleUpdate()` is empty, the inherited lifecycle test asserts create, view and
    delete and then marks itself incomplete, instead of passing in silence. The generator
    picks a non-Boolean field to update where there is one, a Boolean otherwise, and
    for an entity of nothing but keys it writes a comment saying none could be chosen.
-4. **Sample data is a starting point.** Values derive from the GraphQL type
+5. **Sample data is a starting point.** Values derive from the GraphQL type
    (`'<name> 1'`, `1`, `1.5`, `true`). `ID`-typed foreign keys are left out of
    `sampleInput`, because the generator cannot know a valid parent row. A test for an
    entity with a required foreign key fails until the project fills it in; the
@@ -709,9 +719,11 @@ docker/
   README.md
 ```
 
-Commands match Anorm's: `init`, `up [--build] [--tools]`, `down [-v]`,
-`test [args]`, `quality`, `coverage`, `ci`, `shell`, `mysql`, `db-reset`, `info`,
-`composer`, `help`.
+Commands match Anorm's *(revised: the full list, as `docker/anorm-graphql help` prints
+it)*: stack `init`, `up [--build] [--tools]`, `down [-v]`, `build`, `rebuild`, `ps`,
+`logs`, `info`; generating `make`; testing and quality `test [args]`, `test:full`,
+`coverage`, `ci`, `quality`, `analyze`, `cs [check|fix]`; inside the container
+`composer`, `php`, `exec`, `shell`, `root-shell`; database `mysql`, `db-reset`; `help`.
 
 Differences from Anorm's copy, chosen so both stacks can run at once:
 
