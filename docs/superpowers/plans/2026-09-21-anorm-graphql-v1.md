@@ -24,7 +24,7 @@
 
 ## How this plan was prepared, and what that means for you
 
-Every source and test file in this plan was written and **run before the plan was written**: a clean `composer install` on PHP 7.4 resolving webonyx 15.37.2 with no advisory ignored, then `composer ci` green — 89 PHPUnit tests against MariaDB 10.11 with coverage, phpcs clean, phpstan level 5 clean. (An earlier revision of this plan was verified on webonyx 14 with simpod; the no-DB suites of that revision also passed on PHP 8.3. The webonyx 15 revision has not yet been run on 8.3.) The docker port script was dry-run (it produces a script that passes `bash -n` and prints its help), but the stack itself was **not** brought up from it. That is why Task 1 is the one task you should expect to have to debug, and its likeliest trouble is environmental: ports, the image build, the health check. The code blocks are therefore to be **transcribed exactly**, not improved. If a step fails, the likeliest causes, in order, are: a transcription slip, a dependency resolving to a different version than the one verified, or the environment. Diagnose in that order before touching the code's logic.
+Every source and test file in this plan was written and **run before the plan was written**: a clean `composer install` on PHP 7.4 resolving webonyx 15.37.2 with no advisory ignored, then `composer ci` green — 92 PHPUnit tests against MariaDB 10.11 with coverage, phpcs clean, phpstan level 5 clean. (An earlier revision of this plan was verified on webonyx 14 with simpod; the no-DB suites of that revision also passed on PHP 8.3. The webonyx 15 revision has not yet been run on 8.3.) The docker port script was dry-run (it produces a script that passes `bash -n` and prints its help), but the stack itself was **not** brought up from it. That is why Task 1 is the one task you should expect to have to debug, and its likeliest trouble is environmental: ports, the image build, the health check. The code blocks are therefore to be **transcribed exactly**, not improved. If a step fails, the likeliest causes, in order, are: a transcription slip, a dependency resolving to a different version than the one verified, or the environment. Diagnose in that order before touching the code's logic.
 
 TDD still applies to how you work: write the test, watch it fail for the stated reason, then add the implementation. A test that passes before its implementation exists means a step was done out of order.
 
@@ -37,7 +37,7 @@ Validation found and fixed these things, which is why the code differs from a na
 | **Gate A:** Anorm's `DataMapper::read()` and the UPDATE branch of `write()` concatenate the key value into SQL (private advisory GHSA-xc47-9hw7-px38), and `ModelType` passed client IDs to `read()` | `ModelType` never calls `Model::read()`. One private `scopedQuery()` builds every query and binds every value; on update the key is never copied from the input; a numeric key must match the requested id exactly |
 | **Gate A:** `json_decode(..., true)` turns a key like `"2"` into an int, which slipped past the whitelist | the selector is decoded as objects for validation, so an object's properties and a list's positions stay distinct |
 | **Gate A:** Anorm's parser reads unprefixed words (`type`, `size`, `in`, ...) as operators, and most parser errors were uncaught | `ModelType` drives `MangoQueryParser` itself and turns its errors into `UserError`; a field with an operator-word name is refused in a selector, with the reason |
-| **Gate A:** DDL inside a mutation commits implicitly; the failed rollback then hid the real error | a failed rollback never replaces the original exception; mutations refuse a model in Anorm's dynamic mode |
+| **Gate A:** DDL inside a mutation commits implicitly; the failed rollback then hid the real error | a failed rollback never replaces the original exception; mutations refuse a model in Anorm's dynamic mode; a release or commit that fails because the transaction had already ended (MySQL 1305, or PHP 8's "no active transaction") is reported as an implicit commit with the driver error as its cause, and any other failure there (lost connection, deadlock) is rethrown untouched. With no outer transaction PHP 7.4's PDO cannot detect an implicit commit at all |
 | FrontAccounting's central tables are "fixed discriminator + single key" (`sales_orders.trans_type`, `debtor_trans.type`) | user-approved addition: `ModelType::scope()`, applied as bound WHERE conditions (not via the selector, since the discriminator is usually named `type`). Generator support for it is v1.1 |
 | `--only` made the schema editor call every other entity's entries orphans | `SchemaEditor::edit()` takes the full list of known entities |
 | A model may declare relationship, array and model-typed properties | `TypeInfoBuilder` leaves them out of the fields |
@@ -142,7 +142,7 @@ docker/                                host-driven PHP 7.4 + MariaDB stack      
 
 **Interfaces:**
 - Consumes: Anorm's docker tooling at `/home/cambell/src/sgw/anorm/docker/`.
-- Produces: `docker/anorm-graphql <up|down|test|quality|ci|shell|mysql|db-reset|info|composer|make|...>`. `docker/anorm-graphql test` runs `composer test:quick` (suites `runtime,tools`); with arguments it runs `vendor/bin/phpunit -c phpunit-no-coverage.xml <args>`. `Anorm\GraphQL\Test\TestEnvironment::pdo(): \PDO`, `::container(): \DI\Container` (its `\PDO::class` entry is that same PDO), `::createTables(): void`.
+- Produces: `docker/anorm-graphql <up|down|test|quality|ci|shell|mysql|db-reset|info|composer|make|...>`. `docker/anorm-graphql test` runs `composer test:quick` (suites `runtime,tools`); with arguments it runs `vendor/bin/phpunit -c phpunit-no-coverage.xml <args>`. `Anorm\GraphQL\Test\TestEnvironment::pdo(): \PDO`, `::connect(string $class = \PDO::class): \PDO` (a connection of its own), `::container(?\PDO $pdo = null): \DI\Container` (its `\PDO::class` entry is the shared PDO unless one is given), `::createTables(): void`.
 
 - [ ] **Step 1: Branch**
 
@@ -477,21 +477,32 @@ class TestEnvironment
     public static function pdo(): \PDO
     {
         if (self::$pdo === null) {
-            $host = getenv('DB_HOST') ?: 'db';
-            $name = getenv('DB_NAME') ?: 'anorm_graphql_test';
-            $user = getenv('DB_USER') ?: 'dev';
-            $pass = getenv('DB_PASS') ?: 'dev';
-            self::$pdo = new \PDO("mysql:host=$host;dbname=$name;charset=utf8mb4", $user, $pass);
-            self::$pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+            self::$pdo = self::connect();
         }
         return self::$pdo;
     }
 
-    /** A container that hands every model the same PDO. */
-    public static function container(): Container
+    /**
+     * A connection of its own, for a test that must break one without breaking the rest.
+     *
+     * @param string $class \PDO or a subclass of it
+     */
+    public static function connect(string $class = \PDO::class): \PDO
+    {
+        $host = getenv('DB_HOST') ?: 'db';
+        $name = getenv('DB_NAME') ?: 'anorm_graphql_test';
+        $user = getenv('DB_USER') ?: 'dev';
+        $pass = getenv('DB_PASS') ?: 'dev';
+        $pdo = new $class("mysql:host=$host;dbname=$name;charset=utf8mb4", $user, $pass);
+        $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+        return $pdo;
+    }
+
+    /** A container that hands every model the same PDO: the shared one unless given another. */
+    public static function container(?\PDO $pdo = null): Container
     {
         $builder = new ContainerBuilder();
-        $builder->addDefinitions([\PDO::class => self::pdo()]);
+        $builder->addDefinitions([\PDO::class => $pdo === null ? self::pdo() : $pdo]);
         return $builder->build();
     }
 
@@ -1068,7 +1079,7 @@ git commit -m "feat: runtime builders, GraphQLUtils, Mapper and MangoInput"
 **Files:**
 - Create: `src/ModelType.php`
 - Create: `test/Fixtures/Model/WidgetModel.php`, `test/Fixtures/Model/OwnerModel.php`, `test/Fixtures/Type/RecordingWidgetType.php`
-- Create: `test/Fixtures/OtherModel/DocumentModel.php`, `test/Fixtures/OtherModel/DynamicWidgetModel.php`, `test/Fixtures/Type/ScopedDocumentType.php`
+- Create: `test/Fixtures/FailingReleasePdo.php`, `test/Fixtures/OtherModel/DocumentModel.php`, `test/Fixtures/OtherModel/DynamicWidgetModel.php`, `test/Fixtures/Type/ScopedDocumentType.php`
 - Test: `test/integration/ModelTypeTest.php`
 
 **Interfaces:**
@@ -1182,6 +1193,9 @@ class RecordingWidgetType extends ModelType
     /** @var string|null Throw from beforeWrite() when the model has this name */
     public $failOnName = null;
 
+    /** @var bool Run DDL in beforeWrite() and carry on as if nothing had happened */
+    public $ddlInBeforeWrite = false;
+
     /** @var bool Run DDL just before failing: MySQL commits implicitly, taking any savepoint with it */
     public $ddlBeforeFailing = false;
 
@@ -1217,13 +1231,54 @@ class RecordingWidgetType extends ModelType
     {
         /** @var WidgetModel $model */
         $this->written[] = [$model->name, $isUpdate];
+        if ($this->ddlInBeforeWrite) {
+            $this->runDdl($model);
+        }
         if ($this->failOnName !== null && $model->name === $this->failOnName) {
             if ($this->ddlBeforeFailing) {
-                $model->getPdo()->exec('CREATE TABLE IF NOT EXISTS `agq_implicit_commit` (`id` INT)');
-                $model->getPdo()->exec('DROP TABLE `agq_implicit_commit`');
+                $this->runDdl($model);
             }
             throw new \RuntimeException('beforeWrite failed on ' . $model->name);
         }
+    }
+
+    /** Any DDL will do: MySQL commits implicitly, taking the transaction and its savepoints with it. */
+    private function runDdl(Model $model): void
+    {
+        $model->getPdo()->exec('CREATE TABLE IF NOT EXISTS `agq_implicit_commit` (`id` INT)');
+        $model->getPdo()->exec('DROP TABLE `agq_implicit_commit`');
+    }
+}
+```
+
+`test/Fixtures/FailingReleasePdo.php`:
+
+```php
+<?php
+
+namespace Anorm\GraphQL\Test\Fixtures;
+
+/**
+ * A real connection whose RELEASE SAVEPOINT fails the way a dropped connection does:
+ * a driver error that has nothing to do with an implicit commit.
+ */
+class FailingReleasePdo extends \PDO
+{
+    /**
+     * Untyped so the one declaration is valid on PHP 7.4 and 8.x alike.
+     *
+     * @param string $statement
+     * @return int|false
+     */
+    #[\ReturnTypeWillChange]
+    public function exec($statement)
+    {
+        if (strpos($statement, 'RELEASE SAVEPOINT') === 0) {
+            $failure = new \PDOException('SQLSTATE[HY000]: General error: 2006 MySQL server has gone away');
+            $failure->errorInfo = ['HY000', 2006, 'MySQL server has gone away'];
+            throw $failure;
+        }
+        return parent::exec($statement);
     }
 }
 ```
@@ -1347,6 +1402,7 @@ class ScopedDocumentType extends ModelType
 
 namespace Anorm\GraphQL\Test\Integration;
 
+use Anorm\GraphQL\Test\Fixtures\FailingReleasePdo;
 use Anorm\GraphQL\Test\Fixtures\OtherModel\DynamicWidgetModel;
 use Anorm\GraphQL\Test\Fixtures\Type\RecordingWidgetType;
 use Anorm\GraphQL\Test\Fixtures\Type\ScopedDocumentType;
@@ -1674,6 +1730,55 @@ class ModelTypeTest extends TestCase
         }
     }
 
+    public function testAnImplicitCommitThatThenSucceedsIsReportedForWhatItIs(): void
+    {
+        TestEnvironment::pdo()->beginTransaction();
+        $this->type->ddlInBeforeWrite = true;
+        try {
+            $this->upsert([['name' => 'a']]);
+            $this->fail('expected the lost savepoint to be reported');
+        } catch (\PDOException $e) {
+            $this->fail('a bare driver error explains nothing: ' . $e->getMessage());
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('committed implicitly', $e->getMessage());
+            $this->assertInstanceOf(\PDOException::class, $e->getPrevious(), 'the driver error is kept as the cause');
+        }
+    }
+
+    public function testAFailureToReleaseThatIsNotAnImplicitCommitIsLeftAsItIs(): void
+    {
+        $pdo = TestEnvironment::connect(FailingReleasePdo::class);
+        $pdo->beginTransaction();
+        try {
+            $this->type->resolveUpsert(null, ['input' => [['name' => 'a']]], TestEnvironment::container($pdo));
+            $this->fail('expected the release to fail');
+        } catch (\PDOException $e) {
+            $this->assertStringContainsString('server has gone away', $e->getMessage());
+        } catch (\RuntimeException $e) {
+            $this->fail('a lost connection is not an implicit commit, and must not be called one: ' . $e->getMessage());
+        } finally {
+            $pdo->rollBack();
+        }
+        $this->assertSame(0, $this->rowCount());
+    }
+
+    public function testAnImplicitCommitWithNoOuterTransactionNeverSurfacesAsADriverError(): void
+    {
+        // With no savepoint to miss, PHP 7.4's PDO cannot tell that the transaction it
+        // began has gone, and commit() succeeds; PHP 8 notices and throws. Either way
+        // the caller must not be handed a bare PDOException.
+        $this->type->ddlInBeforeWrite = true;
+        try {
+            $rows = $this->upsert([['name' => 'a']]);
+            $this->assertSame('a', $rows[0]['name']);
+        } catch (\PDOException $e) {
+            $this->fail('a bare driver error explains nothing: ' . $e->getMessage());
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('committed implicitly', $e->getMessage());
+        }
+        $this->assertSame(1, $this->rowCount(), 'DDL committed the row; nothing can take that back');
+    }
+
     public function testOneFailingRowRollsBackTheWholeUpsert(): void
     {
         $this->type->failOnName = 'b';
@@ -1953,7 +2058,11 @@ abstract class ModelType extends ObjectType
 
         if ($mango !== null) {
             if ($mango->hasSort()) {
-                $builder->orderBy((new MangoQueryParser($mapper))->parseSort($mango->sort));
+                try {
+                    $builder->orderBy((new MangoQueryParser($mapper))->parseSort($mango->sort));
+                } catch (\InvalidArgumentException | \TypeError $e) {
+                    throw new UserError("Argument 'query.sort' is not valid");
+                }
             }
             if ($mango->limit !== null) {
                 $builder->limit($mango->limit, $mango->skip === null ? 0 : $mango->skip);
@@ -2105,6 +2214,17 @@ abstract class ModelType extends ObjectType
     }
 
     /**
+     * Whether a failure to release or commit means the transaction had already ended:
+     * MySQL's 1305, "SAVEPOINT does not exist", or PHP 8's PDO noticing on commit().
+     * Nothing else is evidence of an implicit commit.
+     */
+    private function saysTheTransactionIsGone(\PDOException $e): bool
+    {
+        $driverCode = isset($e->errorInfo[1]) ? (int) $e->errorInfo[1] : 0;
+        return $driverCode === 1305 || stripos($e->getMessage(), 'no active transaction') !== false;
+    }
+
+    /**
      * Run $work so that it happens entirely or not at all. Inside somebody else's
      * transaction that means a savepoint, because MySQL transactions do not nest.
      *
@@ -2134,10 +2254,29 @@ abstract class ModelType extends ObjectType
             }
             throw $e;
         }
-        if ($savepoint !== null) {
-            $pdo->exec('RELEASE SAVEPOINT ' . $savepoint);
-        } else {
-            $pdo->commit();
+        try {
+            if ($savepoint !== null) {
+                $pdo->exec('RELEASE SAVEPOINT ' . $savepoint);
+            } else {
+                $pdo->commit();
+            }
+        } catch (\PDOException $e) {
+            if (!$this->saysTheTransactionIsGone($e)) {
+                // A lost connection, a deadlock: those are what they say they are, and
+                // the server has rolled the work back. Relabelling them would be a lie.
+                throw $e;
+            }
+            // Nothing in $work failed, yet the transaction it ran in is gone. In MySQL
+            // that means a statement committed implicitly, which DDL does. It cannot be
+            // undone from here, so say exactly what happened rather than let a bare
+            // "SAVEPOINT does not exist" reach whoever has to work it out.
+            throw new \RuntimeException(
+                get_class($this) . ': a statement inside this mutation committed implicitly (DDL does, in MySQL). '
+                . 'Its rows, and any transaction the caller had open, are already committed, so all-or-nothing '
+                . 'could not be honoured. Do not run DDL from authorize(), beforeWrite() or a model.',
+                0,
+                $e
+            );
         }
         return $result;
     }
@@ -2147,7 +2286,7 @@ abstract class ModelType extends ObjectType
 - [ ] **Step 5: Run the tests to see them pass**
 
 Run: `docker/anorm-graphql test --testsuite integration`
-Expected: `OK (39 tests, ...)` — 2 from `StackTest`, 37 here (tests with a data provider count once per data set).
+Expected: `OK (42 tests, ...)` — 2 from `StackTest`, 40 here (tests with a data provider count once per data set).
 
 - [ ] **Step 6: Quality, then commit**
 
@@ -5691,12 +5830,12 @@ abstract class ModelTypeTestCase extends TestCase
 - [ ] **Step 4: Run the whole integration suite**
 
 Run: `docker/anorm-graphql test --testsuite integration`
-Expected: `OK (41 tests, ...)`
+Expected: `OK (44 tests, ...)`
 
 - [ ] **Step 5: Run everything, with quality**
 
 Run: `docker/anorm-graphql ci`
-Expected: all suites pass (89 tests), phpcs clean, phpstan `[OK] No errors`.
+Expected: all suites pass (92 tests), phpcs clean, phpstan `[OK] No errors`.
 
 - [ ] **Step 6: Commit**
 

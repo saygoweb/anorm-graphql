@@ -274,7 +274,14 @@ and rolling back to it on failure. *(revised after Gate A)* A rollback that itse
 never replaces the exception that caused it. Mutations refuse a model in Anorm's dynamic
 mode with a `LogicException`: dynamic mode runs DDL during a write, DDL commits
 implicitly in MySQL, and that would silently commit both the rows before it and the
-caller's own transaction. This is required so the generated tests can wrap
+caller's own transaction. If DDL runs anyway (from a hook, say) and the mutation then
+succeeds, the release or commit fails because the transaction has already ended; that,
+and only that (MySQL error 1305, or PHP 8's "no active transaction"), is reported as an
+implicit commit, with the driver error kept as the cause. Any other failure to release or
+commit, such as a lost connection, is rethrown untouched: the server has rolled the work
+back, and saying otherwise could make a caller skip a retry. Known limit: with no outer
+transaction, PHP 7.4's PDO cannot tell that its transaction has gone, so there an
+implicit commit goes unreported. This is required so the generated tests can wrap
 each test in an outer transaction (section 8.2), and it lets a consumer wrap several
 mutations in one transaction of its own.
 
