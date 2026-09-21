@@ -82,6 +82,18 @@ class LegacyWidgetCase extends ModelTypeTestCase
         $this->assertCount(1, $rows);
     }
 
+    /**
+     * The same, written the way people write GraphQL by hand, and saved the way some
+     * editors save it: a byte order mark, a comment, a fragment, then a named operation.
+     */
+    public function testAWriteBehindACommentAndAName(): void
+    {
+        $document = "\xEF\xBB\xBF# create a legacy widget\n\nfragment Bits on LegacyWidgetType { id name }\n\n"
+            . 'mutation CreateOne($input: [LegacyWidgetInput!]!) { legacyWidgetUpsert(input: $input) { ...Bits } }';
+        $data = $this->execute($document, ['input' => [['name' => 'behind a comment']]]);
+        $this->assertCount(1, $data['legacyWidgetUpsert']);
+    }
+
     protected function allowNonTransactionalTables(): bool
     {
         return self::$allow;

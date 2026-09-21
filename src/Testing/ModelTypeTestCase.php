@@ -6,6 +6,8 @@ use Anorm\GraphQL\ModelType;
 use DI\Container;
 use GraphQL\Error\DebugFlag;
 use GraphQL\GraphQL;
+use GraphQL\Language\AST\OperationDefinitionNode;
+use GraphQL\Language\Parser;
 use GraphQL\Type\Schema;
 use PHPUnit\Framework\TestCase;
 
@@ -185,7 +187,7 @@ abstract class ModelTypeTestCase extends TestCase
      */
     protected function execute(string $query, array $variables = []): array
     {
-        if (preg_match('/^\s*mutation\b/i', $query) === 1) {
+        if ($this->hasMutation($query)) {
             // Whoever runs a mutation, the inherited lifecycle test or a test the project
             // wrote itself, it happens inside the transaction tearDown rolls back, and
             // only on a table that can roll back.
@@ -234,6 +236,26 @@ abstract class ModelTypeTestCase extends TestCase
                 . 'override allowNonTransactionalTables() if leaving rows behind is acceptable there.'
             );
         }
+    }
+
+    /**
+     * Whether a GraphQL document holds a mutation. Asked of the parser, not of the text:
+     * a document may open with a comment, a fragment, or another operation.
+     */
+    private function hasMutation(string $query): bool
+    {
+        try {
+            $document = Parser::parse($query, ['noLocation' => true]);
+        } catch (\Throwable $e) {
+            // Not GraphQL at all. Executing it will say so; nothing will be written.
+            return false;
+        }
+        foreach ($document->definitions as $definition) {
+            if ($definition instanceof OperationDefinitionNode && $definition->operation === 'mutation') {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Begin the transaction that tearDown rolls back. */

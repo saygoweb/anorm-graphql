@@ -58,6 +58,15 @@ class ModelTypeTestCaseTest extends TestCase
         $this->assertSame(0, $this->rows(), 'nothing may have been written');
     }
 
+    public function testAMutationIsRecognisedHoweverTheDocumentOpens(): void
+    {
+        $result = (new LegacyWidgetCase('testAWriteBehindACommentAndAName'))->run();
+
+        $this->assertSame(1, $result->skippedCount(), 'a comment, a fragment or a name before the mutation must not hide it');
+        $this->assertSame(0, $result->errorCount() + $result->failureCount());
+        $this->assertSame(0, $this->rows(), 'nothing may have been written');
+    }
+
     public function testAProjectCanAcceptTheConsequences(): void
     {
         LegacyWidgetCase::$allow = true;
