@@ -24,7 +24,7 @@
 
 ## How this plan was prepared, and what that means for you
 
-Every source and test file in this plan was written and **run before the plan was written**: a clean `composer install` on PHP 7.4 resolving webonyx 15.37.2 with no advisory ignored, then `composer ci` green — 70 PHPUnit tests against MariaDB 10.11 with coverage, phpcs clean, phpstan level 5 clean. (An earlier revision of this plan was verified on webonyx 14 with simpod; the no-DB suites of that revision also passed on PHP 8.3. The webonyx 15 revision has not yet been run on 8.3.) The docker port script was dry-run (it produces a script that passes `bash -n` and prints its help), but the stack itself was **not** brought up from it. That is why Task 1 is the one task you should expect to have to debug, and its likeliest trouble is environmental: ports, the image build, the health check. The code blocks are therefore to be **transcribed exactly**, not improved. If a step fails, the likeliest causes, in order, are: a transcription slip, a dependency resolving to a different version than the one verified, or the environment. Diagnose in that order before touching the code's logic.
+Every source and test file in this plan was written and **run before the plan was written**: a clean `composer install` on PHP 7.4 resolving webonyx 15.37.2 with no advisory ignored, then `composer ci` green — 89 PHPUnit tests against MariaDB 10.11 with coverage, phpcs clean, phpstan level 5 clean. (An earlier revision of this plan was verified on webonyx 14 with simpod; the no-DB suites of that revision also passed on PHP 8.3. The webonyx 15 revision has not yet been run on 8.3.) The docker port script was dry-run (it produces a script that passes `bash -n` and prints its help), but the stack itself was **not** brought up from it. That is why Task 1 is the one task you should expect to have to debug, and its likeliest trouble is environmental: ports, the image build, the health check. The code blocks are therefore to be **transcribed exactly**, not improved. If a step fails, the likeliest causes, in order, are: a transcription slip, a dependency resolving to a different version than the one verified, or the environment. Diagnose in that order before touching the code's logic.
 
 TDD still applies to how you work: write the test, watch it fail for the stated reason, then add the implementation. A test that passes before its implementation exists means a step was done out of order.
 
@@ -34,6 +34,11 @@ Validation found and fixed these things, which is why the code differs from a na
 |---|---|
 | `Anorm\Model::__construct` calls `$pdo->setAttribute()` | `NullPdo` overrides `setAttribute()` |
 | Anorm's Mango parser puts an unknown field name into SQL between backticks, unescaped | `ModelType` whitelists every selector and sort field against the model's property map. **This is a security boundary.** |
+| **Gate A:** Anorm's `DataMapper::read()` and the UPDATE branch of `write()` concatenate the key value into SQL (private advisory GHSA-xc47-9hw7-px38), and `ModelType` passed client IDs to `read()` | `ModelType` never calls `Model::read()`. One private `scopedQuery()` builds every query and binds every value; on update the key is never copied from the input; a numeric key must match the requested id exactly |
+| **Gate A:** `json_decode(..., true)` turns a key like `"2"` into an int, which slipped past the whitelist | the selector is decoded as objects for validation, so an object's properties and a list's positions stay distinct |
+| **Gate A:** Anorm's parser reads unprefixed words (`type`, `size`, `in`, ...) as operators, and most parser errors were uncaught | `ModelType` drives `MangoQueryParser` itself and turns its errors into `UserError`; a field with an operator-word name is refused in a selector, with the reason |
+| **Gate A:** DDL inside a mutation commits implicitly; the failed rollback then hid the real error | a failed rollback never replaces the original exception; mutations refuse a model in Anorm's dynamic mode |
+| FrontAccounting's central tables are "fixed discriminator + single key" (`sales_orders.trans_type`, `debtor_trans.type`) | user-approved addition: `ModelType::scope()`, applied as bound WHERE conditions (not via the selector, since the discriminator is usually named `type`). Generator support for it is v1.1 |
 | `--only` made the schema editor call every other entity's entries orphans | `SchemaEditor::edit()` takes the full list of known entities |
 | A model may declare relationship, array and model-typed properties | `TypeInfoBuilder` leaves them out of the fields |
 | webonyx 14 masks a plain `\Exception` as "Internal server error" | not-found and bad-query errors are `GraphQL\Error\UserError` |
@@ -499,10 +504,18 @@ class TestEnvironment
         $pdo = self::pdo();
         $pdo->exec('DROP TABLE IF EXISTS `widgets`');
         $pdo->exec('DROP TABLE IF EXISTS `owners`');
+        $pdo->exec('DROP TABLE IF EXISTS `documents`');
         $pdo->exec(
             'CREATE TABLE `owners` (
                 `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
                 `name` VARCHAR(255) NULL
+            ) ENGINE=InnoDB'
+        );
+        $pdo->exec(
+            'CREATE TABLE `documents` (
+                `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                `type` INT NOT NULL,
+                `title` VARCHAR(255) NULL
             ) ENGINE=InnoDB'
         );
         $pdo->exec(
@@ -1055,6 +1068,7 @@ git commit -m "feat: runtime builders, GraphQLUtils, Mapper and MangoInput"
 **Files:**
 - Create: `src/ModelType.php`
 - Create: `test/Fixtures/Model/WidgetModel.php`, `test/Fixtures/Model/OwnerModel.php`, `test/Fixtures/Type/RecordingWidgetType.php`
+- Create: `test/Fixtures/OtherModel/DocumentModel.php`, `test/Fixtures/OtherModel/DynamicWidgetModel.php`, `test/Fixtures/Type/ScopedDocumentType.php`
 - Test: `test/integration/ModelTypeTest.php`
 
 **Interfaces:**
@@ -1063,6 +1077,7 @@ git commit -m "feat: runtime builders, GraphQLUtils, Mapper and MangoInput"
   - `abstract protected function modelClass(): string`
   - `abstract protected function fields(): array`
   - `protected function newModel(Container $context): Model` — default `new $class($context->get(\PDO::class))`
+  - `protected function scope(): array` — default `[]`; fixed property => value pairs ANDed (bound) into every list and read by key, stamped on every write; an input setting one to another value is a `UserError`
   - `protected function authorize(string $verb, ?Model $model, Container $context): void` — verbs `ModelType::VERB_LIST|VERB_CREATE|VERB_EDIT|VERB_DELETE` = `'list'|'create'|'edit'|'delete'`
   - `protected function beforeWrite(Model $model, array $input, bool $isUpdate, Container $context): void`
   - `public function resolveList($root, $args, Container $context): array` — reads `$args['query']`
@@ -1167,6 +1182,9 @@ class RecordingWidgetType extends ModelType
     /** @var string|null Throw from beforeWrite() when the model has this name */
     public $failOnName = null;
 
+    /** @var bool Run DDL just before failing: MySQL commits implicitly, taking any savepoint with it */
+    public $ddlBeforeFailing = false;
+
     public function __construct()
     {
         parent::__construct(ObjectBuilder::create('WidgetType')->setFields($this->fields())->build());
@@ -1200,8 +1218,122 @@ class RecordingWidgetType extends ModelType
         /** @var WidgetModel $model */
         $this->written[] = [$model->name, $isUpdate];
         if ($this->failOnName !== null && $model->name === $this->failOnName) {
+            if ($this->ddlBeforeFailing) {
+                $model->getPdo()->exec('CREATE TABLE IF NOT EXISTS `agq_implicit_commit` (`id` INT)');
+                $model->getPdo()->exec('DROP TABLE `agq_implicit_commit`');
+            }
             throw new \RuntimeException('beforeWrite failed on ' . $model->name);
         }
+    }
+}
+```
+
+`test/Fixtures/OtherModel/DocumentModel.php`:
+
+```php
+<?php
+
+namespace Anorm\GraphQL\Test\Fixtures\OtherModel;
+
+use Anorm\DataMapper;
+use Anorm\Model;
+
+/**
+ * One table, several kinds of row, told apart by `type`: the shape of FrontAccounting's
+ * debtor_trans. `type` is also a word Anorm's Mango parser reads as an operator.
+ * Outside Fixtures/Model, so the generator tests never see it.
+ */
+class DocumentModel extends Model
+{
+    public function __construct(\PDO $pdo)
+    {
+        parent::__construct($pdo, DataMapper::create($pdo, 'documents', DataMapper::autoMap($this)));
+    }
+
+    /** @var int */
+    public $id;
+
+    /** @var int */
+    public $type;
+
+    /** @var string */
+    public $title;
+}
+```
+
+`test/Fixtures/OtherModel/DynamicWidgetModel.php`:
+
+```php
+<?php
+
+namespace Anorm\GraphQL\Test\Fixtures\OtherModel;
+
+use Anorm\DataMapper;
+use Anorm\Model;
+
+/** A model in Anorm's dynamic mode, which runs DDL during a write. */
+class DynamicWidgetModel extends Model
+{
+    public function __construct(\PDO $pdo)
+    {
+        $mapper = DataMapper::create($pdo, 'widgets', DataMapper::autoMap($this));
+        $mapper->mode = DataMapper::MODE_DYNAMIC;
+        parent::__construct($pdo, $mapper);
+    }
+
+    /** @var int */
+    public $id;
+
+    /** @var string */
+    public $name;
+}
+```
+
+`test/Fixtures/Type/ScopedDocumentType.php`:
+
+```php
+<?php
+
+namespace Anorm\GraphQL\Test\Fixtures\Type;
+
+use Anorm\GraphQL\Builder\FieldBuilder;
+use Anorm\GraphQL\Builder\ObjectBuilder;
+use Anorm\GraphQL\ModelType;
+use Anorm\GraphQL\Test\Fixtures\OtherModel\DocumentModel;
+use GraphQL\Type\Definition\Type;
+
+/** One kind of document: every row it sees, reads or writes has this `type`. */
+class ScopedDocumentType extends ModelType
+{
+    /** @var int */
+    private $documentType;
+
+    /** @var string */
+    private $model;
+
+    public function __construct(string $name, int $documentType, string $model = DocumentModel::class)
+    {
+        $this->documentType = $documentType;
+        $this->model = $model;
+        parent::__construct(ObjectBuilder::create($name)->setFields($this->fields())->build());
+    }
+
+    protected function modelClass(): string
+    {
+        return $this->model;
+    }
+
+    protected function fields(): array
+    {
+        return [
+            FieldBuilder::create('id', Type::nonNull(Type::id()))->build(),
+            FieldBuilder::create('title', Type::string())->build(),
+        ];
+    }
+
+    protected function scope(): array
+    {
+        return ['type' => $this->documentType];
     }
 }
 ```
@@ -1215,7 +1347,9 @@ class RecordingWidgetType extends ModelType
 
 namespace Anorm\GraphQL\Test\Integration;
 
+use Anorm\GraphQL\Test\Fixtures\OtherModel\DynamicWidgetModel;
 use Anorm\GraphQL\Test\Fixtures\Type\RecordingWidgetType;
+use Anorm\GraphQL\Test\Fixtures\Type\ScopedDocumentType;
 use Anorm\GraphQL\Test\TestEnvironment;
 use DI\Container;
 use GraphQL\Error\UserError;
@@ -1237,6 +1371,7 @@ class ModelTypeTest extends TestCase
     protected function setUp(): void
     {
         TestEnvironment::pdo()->exec('DELETE FROM `widgets`');
+        TestEnvironment::pdo()->exec('DELETE FROM `documents`');
         $this->type = new RecordingWidgetType();
         $this->context = TestEnvironment::container();
     }
@@ -1353,6 +1488,10 @@ class ModelTypeTest extends TestCase
     {
         $hostile = 'id` = 1 OR 1=1; DROP TABLE widgets; -- ';
         return [
+            'a key that looks like a number' => [['selector' => '{"2": 1}']],
+            'a key that looks like a list position' => [['selector' => '{"0": 1}']],
+            'a numeric key nested in $and' => [['selector' => '{"$and": [{"0": 1}]}']],
+            'an empty key' => [['selector' => '{"": 1}']],
             'selector key' => [['selector' => json_encode([$hostile => 1])]],
             'nested in $or' => [['selector' => json_encode(['$or' => [['name' => 'a'], [$hostile => 1]]])]],
             'sort string' => [['sort' => [$hostile]]],
@@ -1366,6 +1505,173 @@ class ModelTypeTest extends TestCase
         $selector = json_encode(['$or' => [['name' => 'a'], ['quantity' => ['$gte' => 3]]]]);
         $this->assertSame(['a', 'c'], $this->names(['selector' => $selector, 'sort' => ['name']]));
         $this->assertSame(['b'], $this->names(['selector' => '{"name": {"$in": ["b", "z"]}}']));
+    }
+
+    /**
+     * @dataProvider hostileIds
+     */
+    public function testAHostileIdIsBoundNeverConcatenated(string $id): void
+    {
+        $rows = $this->upsert([['name' => 'secret-a'], ['name' => 'secret-b']]);
+
+        foreach (['delete', 'upsert'] as $mutation) {
+            try {
+                if ($mutation === 'delete') {
+                    $this->type->resolveDelete(null, ['id' => [$id]], $this->context);
+                } else {
+                    $this->upsert([['id' => $id, 'name' => 'overwritten']]);
+                }
+                $this->fail("expected $mutation to find nothing for a hostile id");
+            } catch (UserError $e) {
+                $this->assertStringContainsString('not found', $e->getMessage());
+            }
+        }
+        $this->assertSame(['secret-a', 'secret-b'], $this->names(['sort' => ['name']]), 'no row was touched');
+        $this->assertSame(
+            [['create', null], ['create', null], ['list', null]],
+            $this->type->authorized,
+            'authorize() must never be shown a row the client did not ask for'
+        );
+        $this->assertNotEmpty($rows);
+    }
+
+    /** @return array<string, array<int, string>> */
+    public function hostileIds(): array
+    {
+        return [
+            'tautology' => ["0' OR '1'='1"],
+            'tautology, numeric' => ['0 OR 1=1'],
+            'union' => ["0' UNION SELECT 1,2,3,4,5,6,7 -- "],
+            'stacked' => ["1'; DELETE FROM widgets; -- "],
+        ];
+    }
+
+    public function testAnIdThatOnlyStartsWithTheKeyIsNotThatRow(): void
+    {
+        $id = $this->upsert([['name' => 'a']])[0]['id'];
+        foreach ([$id . "' -- ", $id . ' ', '0' . $id, $id . '.0'] as $almost) {
+            try {
+                $this->type->resolveDelete(null, ['id' => [$almost]], $this->context);
+                $this->fail("expected '$almost' to find nothing");
+            } catch (UserError $e) {
+                $this->assertStringContainsString('not found', $e->getMessage());
+            }
+        }
+        $this->assertSame(1, $this->rowCount());
+        $this->assertCount(1, $this->type->resolveDelete(null, ['id' => [(int) $id]], $this->context), 'an integer id is fine');
+    }
+
+    /**
+     * @dataProvider malformedSelectors
+     */
+    public function testAMalformedSelectorIsAClientSafeError(string $selector): void
+    {
+        $this->expectException(UserError::class);
+        $this->names(['selector' => $selector]);
+    }
+
+    /** @return array<string, array<int, string>> */
+    public function malformedSelectors(): array
+    {
+        return [
+            '$and is not a list' => ['{"$and": "not-an-array"}'],
+            'an unknown operator' => ['{"name": {"$nope": 1}}'],
+            'a list, not an object' => ['[{"name": "a"}]'],
+            'a bare string' => ['"name"'],
+        ];
+    }
+
+    public function testAFieldNamedLikeAnOperatorIsRefusedInASelectorWithAReason(): void
+    {
+        $invoices = new ScopedDocumentType('InvoiceType', 10);
+        try {
+            $invoices->resolveList(null, ['query' => ['selector' => '{"type": 10}']], $this->context);
+            $this->fail("expected 'type' to be refused");
+        } catch (UserError $e) {
+            $this->assertStringContainsString("reads that word as an operator", $e->getMessage());
+        }
+    }
+
+    public function testAScopeSeparatesTwoTypesOverOneTable(): void
+    {
+        $invoices = new ScopedDocumentType('InvoiceType', 10);
+        $quotes = new ScopedDocumentType('QuoteType', 32);
+
+        $invoice = $invoices->resolveUpsert(null, ['input' => [['title' => 'inv']]], $this->context)[0];
+        $quote = $quotes->resolveUpsert(null, ['input' => [['title' => 'quo']]], $this->context)[0];
+        $this->assertEquals(10, $invoice['type'], 'the scope is stamped on a create');
+        $this->assertEquals(32, $quote['type']);
+
+        $this->assertSame(['inv'], array_column($invoices->resolveList(null, [], $this->context), 'title'));
+        $this->assertSame(['quo'], array_column($quotes->resolveList(null, [], $this->context), 'title'));
+        $query = ['selector' => '{"title": {"$in": ["inv", "quo"]}}'];
+        $this->assertSame(
+            ['quo'],
+            array_column($quotes->resolveList(null, ['query' => $query], $this->context), 'title'),
+            'the scope is ANDed with the selector, not replaced by it'
+        );
+
+        $outsideScope = [
+            'resolveDelete' => ['id' => [$invoice['id']]],
+            'resolveUpsert' => ['input' => [['id' => $invoice['id'], 'title' => 'x']]],
+        ];
+        foreach ($outsideScope as $method => $args) {
+            try {
+                $quotes->$method(null, $args, $this->context);
+                $this->fail("expected $method to find nothing outside its scope");
+            } catch (UserError $e) {
+                $this->assertStringContainsString('not found', $e->getMessage());
+            }
+        }
+        $this->assertSame(['inv'], array_column($invoices->resolveList(null, [], $this->context), 'title'));
+    }
+
+    public function testAnInputCannotMoveARowOutOfItsScope(): void
+    {
+        $invoices = new ScopedDocumentType('InvoiceType', 10);
+        $id = $invoices->resolveUpsert(null, ['input' => [['title' => 'inv', 'type' => 10]]], $this->context)[0]['id'];
+        try {
+            $invoices->resolveUpsert(null, ['input' => [['id' => $id, 'type' => 32]]], $this->context);
+            $this->fail('expected the scope property to be refused');
+        } catch (UserError $e) {
+            $this->assertStringContainsString("'type' is fixed for InvoiceType", $e->getMessage());
+        }
+        $this->assertCount(1, $invoices->resolveList(null, [], $this->context));
+    }
+
+    public function testAScopeNamingAnUnknownPropertyIsADeveloperError(): void
+    {
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage("'type' is not a property");
+        (new ScopedDocumentType('Broken', 1, \Anorm\GraphQL\Test\Fixtures\Model\WidgetModel::class))
+            ->resolveList(null, [], $this->context);
+    }
+
+    public function testMutationsRefuseAModelInDynamicMode(): void
+    {
+        $type = new ScopedDocumentType('Dynamic', 1, DynamicWidgetModel::class);
+        foreach (['resolveUpsert' => ['input' => [['name' => 'a']]], 'resolveDelete' => ['id' => [1]]] as $method => $args) {
+            try {
+                $type->$method(null, $args, $this->context);
+                $this->fail("expected $method to refuse dynamic mode");
+            } catch (\LogicException $e) {
+                $this->assertStringContainsString('static mode', $e->getMessage());
+            }
+        }
+        $this->assertSame(0, $this->rowCount());
+    }
+
+    public function testAFailedRollbackDoesNotHideTheRealError(): void
+    {
+        TestEnvironment::pdo()->beginTransaction();
+        $this->type->failOnName = 'b';
+        $this->type->ddlBeforeFailing = true;
+        try {
+            $this->upsert([['name' => 'a'], ['name' => 'b']]);
+            $this->fail('expected the second row to fail');
+        } catch (\Throwable $e) {
+            $this->assertSame('beforeWrite failed on b', $e->getMessage(), get_class($e));
+        }
     }
 
     public function testOneFailingRowRollsBackTheWholeUpsert(): void
@@ -1467,7 +1773,10 @@ namespace Anorm\GraphQL;
 
 use Anorm\DataMapper;
 use Anorm\MangoQuery;
+use Anorm\MangoQueryParser;
 use Anorm\Model;
+use Anorm\QueryBuilder;
+use Anorm\SqlCondition;
 use DI\Container;
 use GraphQL\Error\UserError;
 use GraphQL\Type\Definition\ObjectType;
@@ -1485,6 +1794,16 @@ abstract class ModelType extends ObjectType
     public const VERB_EDIT = 'edit';
     public const VERB_DELETE = 'delete';
 
+    /**
+     * Words Anorm's Mango parser reads as operators even without a `$`. A field with
+     * one of these names cannot appear in a selector: the parser would not treat it
+     * as a field. Kept in step with Anorm\MangoQueryParser::isOperator().
+     */
+    private const OPERATOR_WORDS = [
+        'and', 'or', 'not', 'nor', 'eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'in', 'nin',
+        'exists', 'type', 'regex', 'beginswith', 'all', 'elemmatch', 'allmatch', 'size',
+    ];
+
     /** @var int Makes each savepoint name unique within the process */
     private static $savepoints = 0;
 
@@ -1498,6 +1817,22 @@ abstract class ModelType extends ObjectType
     {
         $class = $this->modelClass();
         return new $class($context->get(\PDO::class));
+    }
+
+    /**
+     * Fixed property => value pairs that every row of this Type has.
+     *
+     * For a table that holds several kinds of row, told apart by a discriminator
+     * column: sales orders and quotations, invoices and payments. The scope is ANDed
+     * into every list and every read by key, stamped on every write, and an input
+     * that tries to set a scope property to anything else is refused. Within the
+     * scope the model's key must be unique.
+     *
+     * @return array<string, mixed>
+     */
+    protected function scope(): array
+    {
+        return [];
     }
 
     /**
@@ -1519,11 +1854,7 @@ abstract class ModelType extends ObjectType
         $this->authorize(self::VERB_LIST, null, $context);
 
         $probe = $this->newModel($context);
-        $builder = DataMapper::find($this->modelClass(), $probe->getPdo());
-        $mango = $this->mangoQuery(isset($args['query']) ? $args['query'] : null, $probe->mapper()->map);
-        if ($mango !== null) {
-            $builder->byMango($mango);
-        }
+        $builder = $this->scopedQuery($probe, isset($args['query']) ? $args['query'] : null, []);
         $rows = [];
         foreach ($builder->some() as $model) {
             $rows[] = Mapper::toArray($model);
@@ -1534,20 +1865,29 @@ abstract class ModelType extends ObjectType
     public function resolveUpsert($root, $args, Container $context): array
     {
         $probe = $this->newModel($context);
+        $this->assertStaticMode($probe);
         $key = $probe->mapper()->modelPrimaryKey;
+        $scope = $this->scope();
+        // Never taken from the input: the key of an existing row comes from the row,
+        // and scope properties are fixed.
+        $notFromInput = array_merge([$key], array_keys($scope));
 
-        return $this->transactional($probe->getPdo(), function () use ($args, $context, $key) {
+        return $this->transactional($probe->getPdo(), function () use ($args, $context, $key, $scope, $notFromInput) {
             $rows = [];
             foreach ($args['input'] as $input) {
-                $model = $this->newModel($context);
+                $this->assertInputWithinScope($input, $scope);
                 $isUpdate = isset($input[$key]) && $input[$key] !== '';
                 if ($isUpdate) {
-                    $this->readOrFail($model, $input[$key]);
+                    $model = $this->findOrFail($context, $input[$key]);
                     $this->authorize(self::VERB_EDIT, $model, $context);
                 } else {
+                    $model = $this->newModel($context);
                     $this->authorize(self::VERB_CREATE, null, $context);
                 }
-                Mapper::toModel($model, $input, $isUpdate ? [] : [$key]);
+                Mapper::toModel($model, $input, $notFromInput);
+                foreach ($scope as $property => $value) {
+                    $model->$property = $value;
+                }
                 $this->beforeWrite($model, $input, $isUpdate, $context);
                 $model->write();
                 $rows[] = Mapper::toArray($model);
@@ -1558,19 +1898,123 @@ abstract class ModelType extends ObjectType
 
     public function resolveDelete($root, $args, Container $context): array
     {
-        $pdo = $this->newModel($context)->getPdo();
+        $probe = $this->newModel($context);
+        $this->assertStaticMode($probe);
 
-        return $this->transactional($pdo, function () use ($args, $context) {
+        return $this->transactional($probe->getPdo(), function () use ($args, $context) {
             $rows = [];
             foreach ($args['id'] as $id) {
-                $model = $this->newModel($context);
-                $this->readOrFail($model, $id);
+                $model = $this->findOrFail($context, $id);
                 $this->authorize(self::VERB_DELETE, $model, $context);
                 $rows[] = Mapper::toArray($model);
                 $model->delete();
             }
             return $rows;
         });
+    }
+
+    /**
+     * The one place a query is built. Everything a client supplies is either checked
+     * against the model's property map (names) or bound (values); nothing is
+     * concatenated. Model::read() is deliberately not used: up to Anorm 3.2.0 it
+     * concatenates the id into its SQL.
+     *
+     * @param array<string, mixed>|null $query A MangoInput value, or null
+     * @param array<string, mixed> $equals Further property => value conditions, bound
+     */
+    private function scopedQuery(Model $probe, ?array $query, array $equals): QueryBuilder
+    {
+        $mapper = $probe->mapper();
+        $builder = DataMapper::find($this->modelClass(), $probe->getPdo());
+        $mango = $this->mangoQuery($query, $mapper->map);
+
+        $condition = SqlCondition::empty();
+        if ($mango !== null && $mango->hasConditions()) {
+            try {
+                $condition = (new MangoQueryParser($mapper))->parseSelector($mango->selector);
+            } catch (\InvalidArgumentException $e) {
+                throw new UserError("Argument 'query.selector' is not valid: " . $e->getMessage());
+            } catch (\TypeError $e) {
+                throw new UserError("Argument 'query.selector' is not valid");
+            }
+        }
+        $n = 0;
+        foreach (array_merge($this->scope(), $equals) as $property => $value) {
+            if (!isset($mapper->map[$property])) {
+                throw new \LogicException(get_class($this) . ": '$property' is not a property of " . $this->modelClass());
+            }
+            $name = ':agq_' . (++$n);
+            $fixed = new SqlCondition('`' . $mapper->map[$property] . '` = ' . $name, [$name => $value]);
+            $condition = $condition->isEmpty() ? $fixed : $condition->combine($fixed, 'AND');
+        }
+        if (!$condition->isEmpty()) {
+            $builder->where($condition);
+        }
+
+        if ($mango !== null) {
+            if ($mango->hasSort()) {
+                $builder->orderBy((new MangoQueryParser($mapper))->parseSort($mango->sort));
+            }
+            if ($mango->limit !== null) {
+                $builder->limit($mango->limit, $mango->skip === null ? 0 : $mango->skip);
+            } elseif ($mango->skip !== null && $mango->skip > 0) {
+                $builder->limit(PHP_INT_MAX, $mango->skip);
+            }
+        }
+        return $builder;
+    }
+
+    /**
+     * The row with this key, within the scope.
+     *
+     * @param mixed $id Straight from the client, so not yet known to be a string or an integer;
+     *                  it is bound, never concatenated
+     */
+    private function findOrFail(Container $context, $id): Model
+    {
+        if (!is_int($id) && !is_string($id)) {
+            throw new UserError($this->name . ' id must be a string or an integer');
+        }
+        $probe = $this->newModel($context);
+        $key = $probe->mapper()->modelPrimaryKey;
+        $model = $this->scopedQuery($probe, null, [$key => $id])->one();
+        // MySQL compares a string with a numeric column by casting the string, so a
+        // bound "5 anything" finds row 5. That is not the row the client named.
+        if ($model instanceof Model && is_numeric($model->$key) && (string) $model->$key !== (string) $id) {
+            $model = false;
+        }
+        if (!$model instanceof Model) {
+            throw new UserError($this->name . " id '" . substr((string) $id, 0, 40) . "' not found");
+        }
+        return $model;
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @param array<string, mixed> $scope
+     */
+    private function assertInputWithinScope(array $input, array $scope): void
+    {
+        foreach ($scope as $property => $value) {
+            if (array_key_exists($property, $input) && $input[$property] != $value) {
+                throw new UserError("'$property' is fixed for " . $this->name . ' and cannot be set');
+            }
+        }
+    }
+
+    /**
+     * All-or-nothing needs every statement of a mutation to be transactional. Anorm's
+     * dynamic mode runs DDL during a write, and DDL commits implicitly in MySQL: it
+     * would silently commit the rows before it, and the caller's own transaction too.
+     */
+    private function assertStaticMode(Model $probe): void
+    {
+        if ($probe->mapper()->mode === DataMapper::MODE_DYNAMIC) {
+            throw new \LogicException(
+                $this->modelClass() . " is in Anorm's dynamic mode, which runs DDL during a write; "
+                . 'DDL commits implicitly, so mutations through ModelType need static mode'
+            );
+        }
     }
 
     /**
@@ -1584,16 +2028,21 @@ abstract class ModelType extends ObjectType
         }
         $mango = [];
         if (isset($query['selector']) && $query['selector'] !== '') {
-            $selector = json_decode($query['selector'], true);
-            if (!is_array($selector)) {
+            // Decoded twice on purpose. As objects, a JSON object and a JSON list stay
+            // distinguishable, which the field-name check depends on; as arrays is what
+            // Anorm takes.
+            $asObjects = json_decode($query['selector']);
+            if (!$asObjects instanceof \stdClass) {
                 throw new UserError("Argument 'query.selector' is not a valid JSON object");
             }
-            $this->assertKnownFields($selector, $map);
-            $mango[MangoQuery::MANGO_SELECTOR] = $selector;
+            $this->assertKnownFields($asObjects, $map);
+            $mango[MangoQuery::MANGO_SELECTOR] = json_decode($query['selector'], true);
         }
         if (isset($query[MangoQuery::MANGO_SORT])) {
             foreach ($query[MangoQuery::MANGO_SORT] as $item) {
-                $this->assertKnownFields(is_array($item) ? $item : [(string) $item => 'asc'], $map);
+                foreach (is_array($item) ? array_keys($item) : [$item] as $name) {
+                    $this->assertFieldName((string) $name, $map);
+                }
             }
         }
         foreach ([MangoQuery::MANGO_LIMIT, MangoQuery::MANGO_SKIP, MangoQuery::MANGO_SORT] as $name) {
@@ -1609,34 +2058,49 @@ abstract class ModelType extends ObjectType
     }
 
     /**
-     * Refuse any field name that is not a property of the model.
+     * Refuse any field name in a selector that is not a property of the model.
      *
      * This is a security boundary, not a nicety. Anorm's Mango parser puts a name it
      * does not recognise into the SQL between backticks, unescaped, and these names
      * arrive from the API's clients.
      *
-     * @param array<int|string, mixed> $selector A selector, or any part of one
+     * @param mixed $node A selector decoded as objects, or any part of one. Every
+     *                    property of an object is a name the client chose, even one
+     *                    that looks like a number; the items of a list are not names.
      * @param array<string, string> $map The model's property => column map
      */
-    private function assertKnownFields(array $selector, array $map): void
+    private function assertKnownFields($node, array $map): void
     {
-        foreach ($selector as $key => $value) {
-            if (is_string($key) && ($key === '' || $key[0] !== '$') && !isset($map[$key])) {
-                throw new UserError("Argument 'query' names an unknown field '" . substr($key, 0, 40) . "'");
+        if (is_array($node)) {
+            foreach ($node as $item) {
+                $this->assertKnownFields($item, $map);
             }
-            if (is_array($value)) {
-                $this->assertKnownFields($value, $map);
+            return;
+        }
+        if (!$node instanceof \stdClass) {
+            return;
+        }
+        foreach (get_object_vars($node) as $name => $value) {
+            $name = (string) $name;
+            if ($name === '' || $name[0] !== '$') {
+                $this->assertFieldName($name, $map);
             }
+            $this->assertKnownFields($value, $map);
         }
     }
 
     /**
-     * @param int|string $id
+     * @param array<string, string> $map The model's property => column map
      */
-    private function readOrFail(Model $model, $id): void
+    private function assertFieldName(string $name, array $map): void
     {
-        if (!$model->read($id)) {
-            throw new UserError($this->name . " id '$id' not found");
+        if (!isset($map[$name])) {
+            throw new UserError("Argument 'query' names an unknown field '" . substr($name, 0, 40) . "'");
+        }
+        if (in_array(strtolower($name), self::OPERATOR_WORDS, true)) {
+            throw new UserError(
+                "Argument 'query' cannot filter or sort on '$name': Anorm's Mango parser reads that word as an operator"
+            );
         }
     }
 
@@ -1658,10 +2122,15 @@ abstract class ModelType extends ObjectType
         try {
             $result = $work();
         } catch (\Throwable $e) {
-            if ($savepoint !== null) {
-                $pdo->exec('ROLLBACK TO SAVEPOINT ' . $savepoint);
-            } else {
-                $pdo->rollBack();
+            try {
+                if ($savepoint !== null) {
+                    $pdo->exec('ROLLBACK TO SAVEPOINT ' . $savepoint);
+                } else {
+                    $pdo->rollBack();
+                }
+            } catch (\Throwable $rollbackFailure) {
+                // The rollback can fail too, for one if something in $work committed
+                // implicitly. The error worth reporting is still the one that got us here.
             }
             throw $e;
         }
@@ -1678,7 +2147,7 @@ abstract class ModelType extends ObjectType
 - [ ] **Step 5: Run the tests to see them pass**
 
 Run: `docker/anorm-graphql test --testsuite integration`
-Expected: `OK (20 tests, ...)` — 2 from `StackTest`, 18 here (the hostile-query test counts once per data set, four in all).
+Expected: `OK (39 tests, ...)` — 2 from `StackTest`, 37 here (tests with a data provider count once per data set).
 
 - [ ] **Step 6: Quality, then commit**
 
@@ -1700,6 +2169,8 @@ Then confirm each item against spec §4, with file and line:
 - [ ] A selector that is not JSON, and a field name that is not a model property, both raise `UserError` — and the field check covers selector keys at every depth **and** `sort` in both its string and object forms. Try to think of a Mango position that carries a field name and is not checked.
 - [ ] `resolveUpsert`: a present, non-empty key means read then `authorize('edit', $model)`; otherwise `authorize('create', null)`; the key is excluded from `toModel` on create; `beforeWrite` runs after `toModel` and before `write`.
 - [ ] `resolveDelete` captures the row before deleting it, and authorizes with the model.
+- [ ] No client-supplied value is ever concatenated into SQL: `grep -n "->read(" src/ModelType.php` prints nothing, every value in `scopedQuery()` is bound, and the key is never copied from an input onto a model.
+- [ ] `scope()` is applied to list, to read by key, and to writes; a row outside the scope is "not found" for upsert and delete.
 - [ ] `FieldBuilder` / `ObjectBuilder` produce configs graphql-php 15 accepts for object and input types; an explicit `null` default is kept; nothing in `src/` imports `SimPod`.
 - [ ] Both mutations are all-or-nothing, use a savepoint inside an existing transaction, release it on success, and never commit or roll back a transaction they did not begin.
 - [ ] Every path that throws inside `transactional()` leaves `inTransaction()` as it found it.
@@ -5220,12 +5691,12 @@ abstract class ModelTypeTestCase extends TestCase
 - [ ] **Step 4: Run the whole integration suite**
 
 Run: `docker/anorm-graphql test --testsuite integration`
-Expected: `OK (22 tests, ...)`
+Expected: `OK (41 tests, ...)`
 
 - [ ] **Step 5: Run everything, with quality**
 
 Run: `docker/anorm-graphql ci`
-Expected: all suites pass (70 tests), phpcs clean, phpstan `[OK] No errors`.
+Expected: all suites pass (89 tests), phpcs clean, phpstan `[OK] No errors`.
 
 - [ ] **Step 6: Commit**
 

@@ -189,6 +189,7 @@ abstract protected function modelClass(): string;
 abstract protected function fields(): array;
 
 protected function newModel(Container $context): Model;
+protected function scope(): array;                        // (revised) default []
 
 public function resolveList($root, $args, Container $context): array;
 public function resolveUpsert($root, $args, Container $context): array;
@@ -205,6 +206,24 @@ protected function beforeWrite(Model $model, array $input, bool $isUpdate, Conta
   Verbs are `list`, `create`, `edit`, `delete`. `$model` is null for `list` and
   `create`.
 
+**No client value is ever concatenated into SQL** *(revised after Gate A)*. Up to
+3.2.0, Anorm's `DataMapper::read()` and the UPDATE branch of `write()` concatenate the
+key value into their SQL (private advisory GHSA-xc47-9hw7-px38). `ModelType` therefore
+never calls `Model::read()` / `readOrThrow()`. A single private `scopedQuery()` builds
+every query, for lists and for reads by key alike, and binds every value. On update the
+key is never copied from the input onto the model, so `write()` only ever sees the key
+the database returned. A numeric key must equal the requested id exactly as a string:
+MySQL would otherwise cast a bound `"5 anything"` to row 5.
+
+**`scope()`** *(revised; user-approved addition)*. Fixed property => value pairs that
+every row of the Type has, for a table holding several kinds of row told apart by a
+discriminator column (FrontAccounting's `sales_orders.trans_type`, `debtor_trans.type`).
+The scope is ANDed into every list and every read by key, stamped on every write, and an
+input that sets a scope property to another value is a client-safe error. It is applied
+as bound WHERE conditions, not through the Mango selector, because a discriminator is
+usually named `type`, which Anorm's Mango parser reads as an operator. Within the scope
+the model's key must be unique. Generating scoped entities from a config file is v1.1.
+
 **`resolveList`**
 
 1. `authorize('list', null, $context)`.
@@ -215,6 +234,12 @@ protected function beforeWrite(Model $model, array $input, bool $isUpdate, Conta
    map; anything else throws a client-safe error. This is a security boundary:
    Anorm's Mango parser puts a name it does not recognise into the SQL between
    backticks, unescaped, and these names arrive from the API's clients.
+   *(revised after Gate A)* The selector is decoded as objects for this check, because
+   `json_decode(..., true)` turns a key such as `"2"` into an integer indistinguishable
+   from a list position. A field whose name Anorm's parser reads as an operator (`type`,
+   `size`, `in`, `and`, ...) cannot appear in a selector or a sort, and is refused with
+   the reason. `ModelType` drives `MangoQueryParser` itself, so every parser error
+   becomes a client-safe error instead of "Internal server error".
 4. `DataMapper::find($class, $pdo)->byMango(MangoQuery::fromArray(...))->some()`.
    With no `query`, `byMango` is not called.
 5. `Mapper::toArray` each row.
@@ -245,7 +270,11 @@ For each id: `readOrThrow`, `authorize('delete', $model, $context)`, capture
 **Transactions.** `resolveUpsert` and `resolveDelete` are all-or-nothing: any row
 failing rolls back every row in that call. If the PDO is already in a transaction
 the resolver uses a savepoint instead of `beginTransaction`, releasing it on success
-and rolling back to it on failure. This is required so the generated tests can wrap
+and rolling back to it on failure. *(revised after Gate A)* A rollback that itself fails
+never replaces the exception that caused it. Mutations refuse a model in Anorm's dynamic
+mode with a `LogicException`: dynamic mode runs DDL during a write, DDL commits
+implicitly in MySQL, and that would silently commit both the rows before it and the
+caller's own transaction. This is required so the generated tests can wrap
 each test in an outer transaction (section 8.2), and it lets a consumer wrap several
 mutations in one transaction of its own.
 
