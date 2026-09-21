@@ -15,19 +15,21 @@ class Php
     );
 
     /**
-     * Words PHP 7.4 does not allow as a namespace segment or a class name. PHP 8 relaxed
-     * this for namespaces, but generated code has to run on the floor this package supports.
+     * The words PHP 7.4 refuses as a namespace segment: its keywords, and nothing else.
+     * Measured, not remembered: each was compiled as `namespace App\\Type\\<Word>\\Base;`
+     * on PHP 7.4.33. Words that are only reserved as class names or type names (`parent`,
+     * `self`, `object`, `string`, `int`, `match` ...) are fine here, because an entity is
+     * never a bare class name: its classes are `<Entity>Type`, `<Entity>Input` and so on.
+     * PHP 8 allows every one of these, but generated code has to run on 7.4 as well.
      */
     const RESERVED = array(
-        'abstract', 'and', 'array', 'as', 'break', 'callable', 'case', 'catch', 'class', 'clone', 'const',
-        'continue', 'declare', 'default', 'die', 'do', 'echo', 'else', 'elseif', 'empty', 'enddeclare',
-        'endfor', 'endforeach', 'endif', 'endswitch', 'endwhile', 'eval', 'exit', 'extends', 'final',
-        'finally', 'fn', 'for', 'foreach', 'function', 'global', 'goto', 'if', 'implements', 'include',
-        'include_once', 'instanceof', 'insteadof', 'interface', 'isset', 'list', 'match', 'namespace',
-        'new', 'or', 'print', 'private', 'protected', 'public', 'readonly', 'require', 'require_once',
-        'return', 'static', 'switch', 'throw', 'trait', 'try', 'unset', 'use', 'var', 'while', 'xor',
-        'yield', 'int', 'float', 'bool', 'string', 'true', 'false', 'null', 'void', 'iterable', 'object',
-        'mixed', 'never', 'self', 'parent',
+        '__halt_compiler', 'abstract', 'and', 'array', 'as', 'break', 'callable', 'case', 'catch', 'class',
+        'clone', 'const', 'continue', 'declare', 'default', 'die', 'do', 'echo', 'else', 'elseif', 'empty',
+        'enddeclare', 'endfor', 'endforeach', 'endif', 'endswitch', 'endwhile', 'eval', 'exit', 'extends',
+        'final', 'finally', 'fn', 'for', 'foreach', 'function', 'global', 'goto', 'if', 'implements',
+        'include', 'include_once', 'instanceof', 'insteadof', 'interface', 'isset', 'list', 'namespace',
+        'new', 'or', 'print', 'private', 'protected', 'public', 'require', 'require_once', 'return',
+        'static', 'switch', 'throw', 'trait', 'try', 'unset', 'use', 'var', 'while', 'xor', 'yield',
     );
 
     /**

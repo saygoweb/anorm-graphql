@@ -43,6 +43,11 @@ class TestWriter
             $foreignKeyNote = "        // Foreign keys are left out: the generator cannot know a valid parent row.\n"
                 . "        // If any is required, create the parent here and add: " . \implode(', ', $foreignKeys) . "\n";
         }
+        $updateNote = '';
+        if ($update === '') {
+            $updateNote = "        // Nothing to update could be chosen: every field is the key or a foreign key.\n"
+                . "        // Until this returns a field, the test reports itself incomplete rather than pass in silence.\n";
+        }
         $keyField = Php::export($info->keyProperty);
 
         return <<<PHP
@@ -91,7 +96,7 @@ $sample        ];
 
     protected function sampleUpdate(): array
     {
-        return [
+$updateNote        return [
 $update        ];
     }
 }

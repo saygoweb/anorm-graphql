@@ -119,10 +119,18 @@ class TypeMaker
                 false
             );
         }
-        $schemaLines = $o->schemaPath === null ? array() : $this->maintainSchema($files, $infos, \array_keys($known));
+        // An entity no model can produce any more, whether its model has gone or it is
+        // skipped for good, leaves its files and its schema entries behind.
+        $producible = array();
+        foreach ($known as $entity => $class) {
+            if (!isset($unusable[$class]) && !isset($this->unparseable[$class])) {
+                $producible[] = $entity;
+            }
+        }
+        $schemaLines = $o->schemaPath === null ? array() : $this->maintainSchema($files, $infos, $producible);
 
         $this->report = \array_merge($this->report, $files->report);
-        foreach ($this->orphans(\array_keys($known)) as $path) {
+        foreach ($this->orphans($producible) as $path) {
             $this->report[] = "orphaned $path (no model produces it; not deleted)";
         }
         foreach ($infos as $info) {

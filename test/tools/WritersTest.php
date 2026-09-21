@@ -87,6 +87,16 @@ class WritersTest extends TestCase
         $this->assertValidPhp($code, 'Boolean-only test');
     }
 
+    public function testAnEntityOfNothingButKeysSaysItsUpdateIsNotTested(): void
+    {
+        $model = new \Anorm\GraphQL\Test\Fixtures\AwkwardModel\LinkModel(new NullPdo());
+        $code = (new TestWriter())->render((new TypeInfoBuilder())->build($model), 'App\GraphQL\Type', 'Tests\GraphQL');
+        $this->assertStringContainsString('// Nothing to update could be chosen: every field is the key or a foreign key.', $code);
+        $this->assertStringContainsString('the test reports itself incomplete', $code);
+        $this->assertStringContainsString('add: ownerId, widgetId', $code);
+        $this->assertValidPhp($code, 'keys-only test');
+    }
+
     public function testAnUpdateFieldThatIsNotABooleanIsPreferred(): void
     {
         $code = (new TestWriter())->render($this->info(), 'App\GraphQL\Type', 'Tests\GraphQL');
