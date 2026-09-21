@@ -1,0 +1,56 @@
+<?php
+namespace Anorm\GraphQL\Tools\Writer;
+
+class TestCaseWriter
+{
+    public function render($testNamespace, $schemaClass)
+    {
+        $testNamespace = \trim($testNamespace, '\\');
+        $schemaClass = \trim($schemaClass, '\\');
+        return <<<PHP
+<?php
+
+namespace $testNamespace;
+
+use Anorm\\GraphQL\\Testing\\ModelTypeTestCase;
+use DI\\Container;
+use DI\\ContainerBuilder;
+use GraphQL\\Type\\Schema;
+
+/**
+ * Yours to edit: anorm-graphql writes this file once and never again.
+ *
+ * Every generated test extends this. It has two jobs: build the container the way
+ * this project builds it, and build the schema. The container must be able to give
+ * a \\PDO, and should hand the same one to every model, or the rollback that cleans
+ * up after each test will not cover what the models wrote.
+ */
+abstract class TestCase extends ModelTypeTestCase
+{
+    protected function createContainer(): Container
+    {
+        \$builder = new ContainerBuilder();
+        \$builder->addDefinitions([
+            \\PDO::class => function () {
+                // REPLACE with this project's test database connection.
+                \$pdo = new \\PDO(
+                    'mysql:host=' . getenv('DB_HOST') . ';dbname=' . getenv('DB_NAME'),
+                    getenv('DB_USER'),
+                    getenv('DB_PASS')
+                );
+                \$pdo->setAttribute(\\PDO::ATTR_ERRMODE, \\PDO::ERRMODE_EXCEPTION);
+                return \$pdo;
+            },
+        ]);
+        return \$builder->build();
+    }
+
+    protected function createSchema(Container \$container): Schema
+    {
+        return new \\$schemaClass(\$container);
+    }
+}
+
+PHP;
+    }
+}
