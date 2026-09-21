@@ -1,0 +1,162 @@
+<?php
+
+namespace Anorm\GraphQL\Test\Tools;
+
+use Anorm\GraphQL\Tools\TypeMaker;
+use Anorm\GraphQL\Tools\TypeMakerOptions;
+use Anorm\GraphQL\Test\TempDir;
+use PHPUnit\Framework\TestCase;
+
+class TypeMakerTest extends TestCase
+{
+    use TempDir;
+
+    protected function setUp(): void
+    {
+        $this->makeTempDir();
+    }
+
+    protected function tearDown(): void
+    {
+        $this->removeTempDir();
+    }
+
+    private function options(): TypeMakerOptions
+    {
+        $o = new TypeMakerOptions();
+        $o->modelsDir = dirname(__DIR__) . '/Fixtures/Model';
+        $o->modelNamespace = 'Anorm\GraphQL\Test\Fixtures\Model';
+        $o->outputDir = "$this->dir/src/Type";
+        $o->typeNamespace = 'Made\Type';
+        $o->testsDir = "$this->dir/tests";
+        $o->testNamespace = 'Made\Tests';
+        $o->schemaPath = "$this->dir/src/ApiSchema.php";
+        $o->schemaNamespace = 'Made';
+        return $o;
+    }
+
+    private function make(TypeMakerOptions $o): TypeMaker
+    {
+        $maker = new TypeMaker($o);
+        $this->assertSame(0, $maker->run(), implode("\n", $maker->report));
+        return $maker;
+    }
+
+    public function testWritesEveryFileForEachEntity(): void
+    {
+        $maker = $this->make($this->options());
+        foreach (
+            [
+                'src/Type/Widget/Base/WidgetTypeBase.php',
+                'src/Type/Widget/Base/WidgetInputBase.php',
+                'src/Type/Widget/WidgetType.php',
+                'src/Type/Widget/WidgetInput.php',
+                'src/Type/Owner/OwnerType.php',
+                'tests/WidgetTypeTest.php',
+                'tests/TestCase.php',
+                'src/ApiSchema.php',
+            ] as $file
+        ) {
+            $this->assertFileExists("$this->dir/$file");
+        }
+        $report = implode("\n", $maker->report);
+        $this->assertStringContainsString('LedgerLineModel', $report, 'the composite-key model is reported as skipped');
+        $this->assertDirectoryDoesNotExist("$this->dir/src/Type/LedgerLine");
+    }
+
+    public function testReadOnlyEntityGetsNoInputAndNoMutations(): void
+    {
+        $o = $this->options();
+        $o->readOnly = ['OwnerModel'];
+        $this->make($o);
+        $this->assertFileExists("$this->dir/src/Type/Owner/OwnerType.php");
+        $this->assertFileDoesNotExist("$this->dir/src/Type/Owner/OwnerInput.php");
+        $schema = file_get_contents("$this->dir/src/ApiSchema.php");
+        $this->assertStringContainsString("'ownerList'", $schema);
+        $this->assertStringNotContainsString("'ownerUpsert'", $schema);
+        $this->assertStringContainsString("'widgetUpsert'", $schema);
+    }
+
+    public function testOnlyLimitsTheRunAndDoesNotReportTheRestAsOrphans(): void
+    {
+        $this->make($this->options());
+        $o = $this->options();
+        $o->only = ['Widget'];
+        $maker = $this->make($o);
+        $this->assertStringNotContainsString('orphaned', implode("\n", $maker->report));
+    }
+
+    public function testAnUnknownNameIsAnErrorAndWritesNothing(): void
+    {
+        $o = $this->options();
+        $o->only = ['Nope'];
+        $maker = new TypeMaker($o);
+        $this->assertSame(2, $maker->run());
+        $this->assertStringContainsString("--only names 'Nope'", $maker->report[0]);
+        $this->assertDirectoryDoesNotExist("$this->dir/src");
+    }
+
+    public function testSecondRunKeepsHandEditsAndRegeneratesBases(): void
+    {
+        $this->make($this->options());
+        $mine = "$this->dir/src/Type/Widget/WidgetType.php";
+        $base = "$this->dir/src/Type/Widget/Base/WidgetTypeBase.php";
+        file_put_contents($mine, file_get_contents($mine) . "// my edit\n");
+        $original = file_get_contents($base);
+        file_put_contents($base, str_replace("'quantity'", "'stale'", $original));
+
+        $this->make($this->options());
+        $this->assertStringContainsString('// my edit', file_get_contents($mine));
+        $this->assertSame($original, file_get_contents($base));
+    }
+
+    public function testForceOverwritesOnceOnlyFiles(): void
+    {
+        $this->make($this->options());
+        $mine = "$this->dir/src/Type/Widget/WidgetType.php";
+        file_put_contents($mine, "<?php // replaced\n");
+        $o = $this->options();
+        $o->force = true;
+        $this->make($o);
+        $this->assertStringContainsString('class WidgetType extends', file_get_contents($mine));
+    }
+
+    public function testDryRunWritesNothing(): void
+    {
+        $o = $this->options();
+        $o->dryRun = true;
+        $this->make($o);
+        $this->assertDirectoryDoesNotExist("$this->dir/src");
+        $this->assertDirectoryDoesNotExist("$this->dir/tests");
+    }
+
+    public function testOrphanedBaseFilesAreReportedNotDeleted(): void
+    {
+        $this->make($this->options());
+        $orphan = "$this->dir/src/Type/Gone/Base/GoneTypeBase.php";
+        mkdir(dirname($orphan), 0777, true);
+        file_put_contents($orphan, "<?php\n// GENERATED by anorm-graphql\n");
+        $maker = $this->make($this->options());
+        $this->assertStringContainsString("orphaned $orphan", implode("\n", $maker->report));
+        $this->assertFileExists($orphan);
+    }
+
+    public function testSchemaNoneLeavesTheSchemaAloneAndTestsNoneWritesNoTests(): void
+    {
+        $o = $this->options();
+        $o->schemaPath = null;
+        $o->testsDir = null;
+        $this->make($o);
+        $this->assertFileDoesNotExist("$this->dir/src/ApiSchema.php");
+        $this->assertDirectoryDoesNotExist("$this->dir/tests");
+    }
+
+    public function testASecondRunChangesNothing(): void
+    {
+        $this->make($this->options());
+        $maker = $this->make($this->options());
+        foreach ($maker->report as $line) {
+            $this->assertMatchesRegularExpression('/^(current|kept|skipped)/', $line);
+        }
+    }
+}
