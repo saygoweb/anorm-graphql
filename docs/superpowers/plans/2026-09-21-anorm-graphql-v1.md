@@ -24,7 +24,7 @@
 
 ## How this plan was prepared, and what that means for you
 
-Every source and test file in this plan was written and **run before the plan was written**: a clean `composer install` on PHP 7.4 resolving webonyx 15.37.2 with no advisory ignored, then `composer ci` green — 144 PHPUnit tests against MariaDB 10.11 with coverage, phpcs clean, phpstan level 5 clean. (An earlier revision of this plan was verified on webonyx 14 with simpod; the no-DB suites of that revision also passed on PHP 8.3. The webonyx 15 revision has not yet been run on 8.3.) The docker port script was dry-run (it produces a script that passes `bash -n` and prints its help), but the stack itself was **not** brought up from it. That is why Task 1 is the one task you should expect to have to debug, and its likeliest trouble is environmental: ports, the image build, the health check. The code blocks are therefore to be **transcribed exactly**, not improved. If a step fails, the likeliest causes, in order, are: a transcription slip, a dependency resolving to a different version than the one verified, or the environment. Diagnose in that order before touching the code's logic.
+Every source and test file in this plan was written and **run before the plan was written**: a clean `composer install` on PHP 7.4 resolving webonyx 15.37.2 with no advisory ignored, then `composer ci` green — 170 PHPUnit tests against MariaDB 10.11 with coverage, phpcs clean, phpstan level 5 clean. (An earlier revision of this plan was verified on webonyx 14 with simpod; the no-DB suites of that revision also passed on PHP 8.3. The webonyx 15 revision has not yet been run on 8.3.) The docker port script was dry-run (it produces a script that passes `bash -n` and prints its help), but the stack itself was **not** brought up from it. That is why Task 1 is the one task you should expect to have to debug, and its likeliest trouble is environmental: ports, the image build, the health check. The code blocks are therefore to be **transcribed exactly**, not improved. If a step fails, the likeliest causes, in order, are: a transcription slip, a dependency resolving to a different version than the one verified, or the environment. Diagnose in that order before touching the code's logic.
 
 TDD still applies to how you work: write the test, watch it fail for the stated reason, then add the implementation. A test that passes before its implementation exists means a step was done out of order.
 
@@ -39,6 +39,7 @@ Validation found and fixed these things, which is why the code differs from a na
 | **Gate A:** Anorm's parser reads unprefixed words (`type`, `size`, `in`, ...) as operators, and most parser errors were uncaught | `ModelType` drives `MangoQueryParser` itself and turns its errors into `UserError`; a field with an operator-word name is refused in a selector, with the reason |
 | **Gate A:** DDL inside a mutation commits implicitly; the failed rollback then hid the real error | a failed rollback never replaces the original exception; mutations refuse a model in Anorm's dynamic mode; a release or commit that fails because the transaction had already ended (MySQL 1305, or PHP 8's "no active transaction") is reported as an implicit commit with the driver error as its cause, and any other failure there (lost connection, deadlock) is rethrown untouched. With no outer transaction PHP 7.4's PDO cannot detect an implicit commit at all |
 | **Gate B:** the first schema editor scanned freely for `'query' =>`, compared imports by class rather than by the short name PHP binds, split entries at commas, and its tests checked syntax only. Result: 7 Critical findings, among them a committed golden file that did not compile, entries written into an unrelated constant, mutations landing in the Query array, and PHP 8 attributes unbalancing the brackets | the editor's internals were rewritten: `Tokens` (version-neutral depth and bracket matching), a locator anchored to `'query' => new ObjectType([ ... 'fields' => [ ... ] ])` with a line-based entry model, and `ImportTable`, which imports a class only when its short name is free (a name the file merely uses unqualified counts as taken) and otherwise writes the fully qualified name. Tests compile their output with `php -l` and run on PHP 7.4 and 8.3. A second review of the rewrite found two more Criticals, each on one PHP version only (8.x: the first part of `Type\Action\ActionType` is inside a single token and was not seen as a name in use; 7.4: a `use` split across lines bound nothing), now fixed, with an `unsure` mode that imports nothing and fully qualifies everything whenever the imports cannot be read with confidence |
+| **Gate C:** run for real against throwaway directories, the generator could be made to clobber a hand-written file that merely quoted the generated header, write outside its output directory through a symbolic link, emit unparseable PHP for an entity or namespace that is a PHP reserved word while reporting `written`, let two models with one entity name share files, and fall back to the DEFAULT output folder on a misspelt option | the header must be the first thing after `<?php`; `FileWriter` is told the directories it may write in, and refuses anything outside them or through a link; reserved namespaces are exit 2, reserved entities are skipped, and an entity's code is all parsed before any of it is written; duplicate entities are both skipped, naming each other; an unexpected argument is exit 2. The first reserved-word list was written from memory and over-rejected (`Parent`, `Match`, `Object`, `String`); it is now the 68 words PHP 7.4.33 was measured to refuse as a namespace segment. Files and schema entries of an entity that can no longer be produced are reported, even when no entity of the run can be. An empty `sampleUpdate()` makes the inherited test report itself incomplete instead of passing in silence |
 | Anorm 3.2.1 binds the key in `read()` and `write()` (advisory GHSA-xc47-9hw7-px38) | this package requires `saygoweb/anorm ^3.2.1`, so it cannot be installed beside a vulnerable Anorm; `ModelType` keeps its own bound, scoped query regardless, because that is also what implements `scope()` |
 | FrontAccounting's central tables are "fixed discriminator + single key" (`sales_orders.trans_type`, `debtor_trans.type`) | user-approved addition: `ModelType::scope()`, applied as bound WHERE conditions (not via the selector, since the discriminator is usually named `type`). Generator support for it is v1.1 |
 | `--only` made the schema editor call every other entity's entries orphans | `SchemaEditor::edit()` takes the full list of known entities |
@@ -3066,6 +3067,31 @@ class WritersTest extends TestCase
         $this->assertValidPhp($code, 'read-only test');
     }
 
+    public function testAnEntityWithOnlyBooleansStillGetsSomethingToUpdate(): void
+    {
+        $model = new \Anorm\GraphQL\Test\Fixtures\AwkwardModel\FlagModel(new NullPdo());
+        $code = (new TestWriter())->render((new TypeInfoBuilder())->build($model), 'App\GraphQL\Type', 'Tests\GraphQL');
+        // Created as true, updated to false: an empty sampleUpdate() would skip the update step unnoticed.
+        $this->assertMatchesRegularExpression("/function sampleUpdate\(\): array\s+\{\s+return \[\s+'active' => false,\s+\];/", $code);
+        $this->assertValidPhp($code, 'Boolean-only test');
+    }
+
+    public function testAnEntityOfNothingButKeysSaysItsUpdateIsNotTested(): void
+    {
+        $model = new \Anorm\GraphQL\Test\Fixtures\AwkwardModel\LinkModel(new NullPdo());
+        $code = (new TestWriter())->render((new TypeInfoBuilder())->build($model), 'App\GraphQL\Type', 'Tests\GraphQL');
+        $this->assertStringContainsString('// Nothing to update could be chosen: every field is the key or a foreign key.', $code);
+        $this->assertStringContainsString('the test reports itself incomplete', $code);
+        $this->assertStringContainsString('add: ownerId, widgetId', $code);
+        $this->assertValidPhp($code, 'keys-only test');
+    }
+
+    public function testAnUpdateFieldThatIsNotABooleanIsPreferred(): void
+    {
+        $code = (new TestWriter())->render($this->info(), 'App\GraphQL\Type', 'Tests\GraphQL');
+        $this->assertMatchesRegularExpression("/function sampleUpdate\(\): array\s+\{\s+return \[\s+'name' => 'name 2',\s+\];/", $code);
+    }
+
     public function testTestCase(): void
     {
         $this->assertGolden('TestCase', (new TestCaseWriter())->render('Tests\GraphQL', 'App\GraphQL\ApiSchema'));
@@ -3107,6 +3133,59 @@ class Php
         'Boolean' => 'Type::boolean()',
         'String' => 'Type::string()',
     );
+
+    /**
+     * The words PHP 7.4 refuses as a namespace segment: its keywords, and nothing else.
+     * Measured, not remembered: each was compiled as `namespace App\\Type\\<Word>\\Base;`
+     * on PHP 7.4.33. Words that are only reserved as class names or type names (`parent`,
+     * `self`, `object`, `string`, `int`, `match` ...) are fine here, because an entity is
+     * never a bare class name: its classes are `<Entity>Type`, `<Entity>Input` and so on.
+     * PHP 8 allows every one of these, but generated code has to run on 7.4 as well.
+     */
+    const RESERVED = array(
+        '__halt_compiler', 'abstract', 'and', 'array', 'as', 'break', 'callable', 'case', 'catch', 'class',
+        'clone', 'const', 'continue', 'declare', 'default', 'die', 'do', 'echo', 'else', 'elseif', 'empty',
+        'enddeclare', 'endfor', 'endforeach', 'endif', 'endswitch', 'endwhile', 'eval', 'exit', 'extends',
+        'final', 'finally', 'fn', 'for', 'foreach', 'function', 'global', 'goto', 'if', 'implements',
+        'include', 'include_once', 'instanceof', 'insteadof', 'interface', 'isset', 'list', 'namespace',
+        'new', 'or', 'print', 'private', 'protected', 'public', 'require', 'require_once', 'return',
+        'static', 'switch', 'throw', 'trait', 'try', 'unset', 'use', 'var', 'while', 'xor', 'yield',
+    );
+
+    /**
+     * @param string $namespace A namespace, or a single segment
+     * @return string|null The first segment that cannot be used, or null when all can
+     */
+    public static function unusableSegment($namespace)
+    {
+        foreach (\explode('\\', \trim($namespace, '\\')) as $segment) {
+            if (!\preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $segment) || \in_array(\strtolower($segment), self::RESERVED, true)) {
+                return $segment;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Whether a file's content says the generator wrote it: the header has to be the first
+     * thing after the opening tag. A file that merely mentions the header is somebody's own.
+     */
+    public static function isGenerated($content)
+    {
+        return \preg_match('/\A<\?php\s+' . \preg_quote(self::HEADER, '/') . '/', $content) === 1;
+    }
+
+    /** @return string|null Why $code does not parse under the running PHP, or null when it does */
+    public static function parseError($code)
+    {
+        try {
+            $parsed = \token_get_all($code, TOKEN_PARSE);
+            unset($parsed);
+            return null;
+        } catch (\ParseError $e) {
+            return $e->getMessage();
+        }
+    }
 
     /** @return string e.g. 'App\GraphQL\Type\Client' */
     public static function entityNamespace($typeNamespace, $entity)
@@ -3335,6 +3414,7 @@ class TestWriter
         $expected = '';
         $sample = '';
         $update = '';
+        $updateIsBoolean = false;
         $foreignKeys = array();
         foreach ($info->fields as $name => $type) {
             $printed = $name === $info->keyProperty ? $type . '!' : $type;
@@ -3347,14 +3427,21 @@ class TestWriter
                 continue;
             }
             $sample .= "            '$name' => " . Php::export($this->sampleValue($name, $type, 1)) . ",\n";
-            if ($update === '' && $type !== 'Boolean') {
+            // Prefer a field whose second value is visibly different; a Boolean will do if that is all there is.
+            if ($update === '' || ($updateIsBoolean && $type !== 'Boolean')) {
                 $update = "            '$name' => " . Php::export($this->sampleValue($name, $type, 2)) . ",\n";
+                $updateIsBoolean = $type === 'Boolean';
             }
         }
         $foreignKeyNote = '';
         if ($foreignKeys) {
             $foreignKeyNote = "        // Foreign keys are left out: the generator cannot know a valid parent row.\n"
                 . "        // If any is required, create the parent here and add: " . \implode(', ', $foreignKeys) . "\n";
+        }
+        $updateNote = '';
+        if ($update === '') {
+            $updateNote = "        // Nothing to update could be chosen: every field is the key or a foreign key.\n"
+                . "        // Until this returns a field, the test reports itself incomplete rather than pass in silence.\n";
         }
         $keyField = Php::export($info->keyProperty);
 
@@ -3404,7 +3491,7 @@ $sample        ];
 
     protected function sampleUpdate(): array
     {
-        return [
+$updateNote        return [
 $update        ];
     }
 }
@@ -4103,6 +4190,33 @@ class SchemaEditorTest extends SchemaProbe
     {
         $source = $this->fixture('alphabetical.in');
         $this->assertSame($source, $this->edit($source, [])->source);
+    }
+
+    public function testWithNoEntitiesAtAllLeftoverEntriesAreStillReported(): void
+    {
+        // Every model of a run can turn out unusable: two of them sharing one entity name, say.
+        $first = $this->edit($this->schema(''), [$this->info('Client')]);
+        $none = $this->edit($first->source, [], []);
+        $this->assertFalse($none->failed);
+        $this->assertSame($first->source, $none->source, 'nothing to write, so nothing changes');
+        $this->assertSame(
+            [
+                "orphaned: 'clientList' is marked as generated but no model produces it",
+                "orphaned: 'clientDelete' is marked as generated but no model produces it",
+                "orphaned: 'clientUpsert' is marked as generated but no model produces it",
+            ],
+            $none->messages
+        );
+        $this->assertSame([], $this->edit($first->source, [], ['Client'])->messages, 'still produced, merely not in this run');
+    }
+
+    public function testWithNoEntitiesAFileItCannotReadIsLeftInPeace(): void
+    {
+        $source = $this->fixture('unparseable.in');
+        $result = $this->edit($source, [], []);
+        $this->assertFalse($result->failed, 'nothing was going to be written, so nothing was refused');
+        $this->assertSame($source, $result->source);
+        $this->assertSame([], $result->messages);
     }
 
     public function testAnEntityLeftOutOfThisRunIsNotAnOrphan(): void
@@ -5497,9 +5611,8 @@ class SchemaEditor
     {
         $result = new SchemaEditResult();
         $result->source = $source;
-        if (!$infos) {
-            return $result;
-        }
+        // With no entities there is nothing to write, but there may still be something to
+        // say: entries marked as generated whose entity no model produces any more.
 
         $desired = array('query' => array(), 'mutation' => array());
         foreach ($infos as $info) {
@@ -5566,6 +5679,10 @@ class SchemaEditor
                 );
             }
         } catch (SchemaShapeException $e) {
+            if (!$infos) {
+                // Nothing was going to be written, so there is nothing to refuse or to paste.
+                return $result;
+            }
             return $this->failure($result, $desired, $e->getMessage());
         }
 
@@ -5821,7 +5938,7 @@ PHP;
 - [ ] **Step 5: Run the tests to see them pass**
 
 Run: `docker/anorm-graphql test test/tools/Schema`
-Expected: `OK (58 tests, ...)`. Then run the same directory on PHP 8 if an 8.x image is to hand, because the tokenizers differ: `docker run --rm -u $(id -u):$(id -g) -v "$PWD":"$PWD" -w "$PWD" php:8.3-cli php vendor/bin/phpunit -c phpunit-no-coverage.xml test/tools/Schema` → also `OK (58 tests, ...)`.
+Expected: `OK (60 tests, ...)`. Then run the same directory on PHP 8 if an 8.x image is to hand, because the tokenizers differ: `docker run --rm -u $(id -u):$(id -g) -v "$PWD":"$PWD" -w "$PWD" php:8.3-cli php vendor/bin/phpunit -c phpunit-no-coverage.xml test/tools/Schema` → also `OK (60 tests, ...)`.
 
 If a whole-file comparison fails, save the actual output and diff it rather than reading PHPUnit's rendering:
 
@@ -5871,13 +5988,13 @@ Then confirm against spec §7, with file and line:
 
 **Files:**
 - Create: `tools/src/FileWriter.php`, `tools/src/TypeMakerOptions.php`, `tools/src/TypeMaker.php`, `bin/anorm-graphql.php`
-- Create: `test/TempDir.php`
-- Test: `test/tools/FileWriterTest.php`, `test/tools/TypeMakerTest.php`
+- Create: `test/TempDir.php`, `test/Fixtures/AwkwardModel/ListModel.php`, `Gadget.php`, `GadgetModel.php`, `FlagModel.php`, `ParentModel.php`, `MatchModel.php`, `LinkModel.php`
+- Test: `test/tools/FileWriterTest.php`, `test/tools/TypeMakerTest.php`, `test/tools/CliTest.php`
 
 **Interfaces:**
 - Consumes: everything from Tasks 4–6; `Anorm\Tools\ModelLocator::__construct(\PDO $pdo)`, `->locate($directory, $namespace): Model[]` keyed by class, public `$skipped`; `Anorm\Tools\CliOptions::splitAssignments(array $argv): array`.
 - Produces:
-  - `FileWriter::__construct($dryRun = false)`, `->writeGenerated($path, $content): bool`, `->writeOnce($path, $content, $force = false): void`, `->replace($path, $content, $verb): void`, public `$report` (string[]). Report verbs: `written`, `current`, `kept`, `forced`, `refused`, `updated`.
+  - `FileWriter::__construct($dryRun = false, array $roots = array())` — `$roots` are the directories writes must stay inside, `->writeGenerated($path, $content): bool`, `->writeOnce($path, $content, $force = false): void`, `->replace($path, $content, $verb): void`, public `$report` (string[]). Report verbs: `written`, `current`, `kept`, `forced`, `refused`, `updated`.
   - `TypeMakerOptions` with public `$modelsDir`, `$modelNamespace`, `$outputDir`, `$typeNamespace`, `$testsDir` (null = none), `$testNamespace`, `$schemaPath` (null = none), `$schemaNamespace`, `$classSuffix`, `$only` (string[]), `$readOnly` (string[]), `$force`, `$dryRun`
   - `TypeMaker::__construct(TypeMakerOptions $options)`, `->run(): int` (0, or 2), public `$report` (string[])
   - `Anorm\GraphQL\Test\TempDir` trait: `makeTempDir()`, `removeTempDir()`, `$this->dir` (under `build/tmp/`)
@@ -5916,10 +6033,202 @@ trait TempDir
             \RecursiveIteratorIterator::CHILD_FIRST
         );
         foreach ($items as $item) {
-            $item->isDir() ? rmdir($item->getPathname()) : unlink($item->getPathname());
+            // A link to a directory is a file to remove, not a directory to empty.
+            $item->isDir() && !$item->isLink() ? rmdir($item->getPathname()) : unlink($item->getPathname());
         }
         rmdir($this->dir);
     }
+}
+```
+
+`test/Fixtures/AwkwardModel/ListModel.php`:
+
+```php
+<?php
+
+namespace Anorm\GraphQL\Test\Fixtures\AwkwardModel;
+
+use Anorm\DataMapper;
+use Anorm\Model;
+
+/** Its entity would be `List`, which PHP 7.4 does not allow as a namespace segment. */
+class ListModel extends Model
+{
+    public function __construct(\PDO $pdo)
+    {
+        parent::__construct($pdo, DataMapper::create($pdo, 'lists', DataMapper::autoMap($this)));
+    }
+
+    /** @var int */
+    public $id;
+
+    /** @var string */
+    public $name;
+}
+```
+
+`test/Fixtures/AwkwardModel/Gadget.php`:
+
+```php
+<?php
+
+namespace Anorm\GraphQL\Test\Fixtures\AwkwardModel;
+
+use Anorm\DataMapper;
+use Anorm\Model;
+
+/** With GadgetModel, a second model whose entity is `Gadget`: the suffix is optional. */
+class Gadget extends Model
+{
+    public function __construct(\PDO $pdo)
+    {
+        parent::__construct($pdo, DataMapper::create($pdo, 'gadgets', DataMapper::autoMap($this)));
+    }
+
+    /** @var int */
+    public $id;
+
+    /** @var string */
+    public $name;
+}
+```
+
+`test/Fixtures/AwkwardModel/GadgetModel.php`:
+
+```php
+<?php
+
+namespace Anorm\GraphQL\Test\Fixtures\AwkwardModel;
+
+use Anorm\DataMapper;
+use Anorm\Model;
+
+/** See Gadget. */
+class GadgetModel extends Model
+{
+    public function __construct(\PDO $pdo)
+    {
+        parent::__construct($pdo, DataMapper::create($pdo, 'gadgets', DataMapper::autoMap($this)));
+    }
+
+    /** @var int */
+    public $id;
+
+    /** @var string */
+    public $name;
+}
+```
+
+`test/Fixtures/AwkwardModel/FlagModel.php`:
+
+```php
+<?php
+
+namespace Anorm\GraphQL\Test\Fixtures\AwkwardModel;
+
+use Anorm\DataMapper;
+use Anorm\Model;
+
+/** Nothing to edit but Booleans: the generated test still needs something to update. */
+class FlagModel extends Model
+{
+    public function __construct(\PDO $pdo)
+    {
+        parent::__construct($pdo, DataMapper::create($pdo, 'flags', DataMapper::autoMap($this)));
+    }
+
+    /** @var int */
+    public $id;
+
+    /** @var bool */
+    public $active;
+
+    /** @var bool */
+    public $archived;
+}
+```
+
+`test/Fixtures/AwkwardModel/ParentModel.php`:
+
+```php
+<?php
+
+namespace Anorm\GraphQL\Test\Fixtures\AwkwardModel;
+
+use Anorm\DataMapper;
+use Anorm\Model;
+
+/** `parent` is reserved only as a bare class name. As an entity it is fine: ParentType, and a namespace segment. */
+class ParentModel extends Model
+{
+    public function __construct(\PDO $pdo)
+    {
+        parent::__construct($pdo, DataMapper::create($pdo, 'parents', DataMapper::autoMap($this)));
+    }
+
+    /** @var int */
+    public $id;
+
+    /** @var string */
+    public $name;
+}
+```
+
+`test/Fixtures/AwkwardModel/MatchModel.php`:
+
+```php
+<?php
+
+namespace Anorm\GraphQL\Test\Fixtures\AwkwardModel;
+
+use Anorm\DataMapper;
+use Anorm\Model;
+
+/** `match` is a keyword from PHP 8, where keywords are allowed in namespaces; on 7.4 it is no keyword at all. */
+class MatchModel extends Model
+{
+    public function __construct(\PDO $pdo)
+    {
+        parent::__construct($pdo, DataMapper::create($pdo, 'matches', DataMapper::autoMap($this)));
+    }
+
+    /** @var int */
+    public $id;
+
+    /** @var string */
+    public $type;
+
+    /** @var int */
+    public $list;
+}
+```
+
+`test/Fixtures/AwkwardModel/LinkModel.php`:
+
+```php
+<?php
+
+namespace Anorm\GraphQL\Test\Fixtures\AwkwardModel;
+
+use Anorm\DataMapper;
+use Anorm\Model;
+
+/** A join table: nothing but its key and foreign keys, so nothing a generated test could sensibly update. */
+class LinkModel extends Model
+{
+    public function __construct(\PDO $pdo)
+    {
+        parent::__construct($pdo, DataMapper::create($pdo, 'links', DataMapper::autoMap($this)));
+    }
+
+    /** @var int */
+    public $id;
+
+    /** @var int */
+    public $ownerId;
+
+    /** @var int */
+    public $widgetId;
 }
 ```
 
@@ -5975,6 +6284,59 @@ class FileWriterTest extends TestCase
         $this->assertStringStartsWith('refused', $writer->report[0]);
     }
 
+    public function testAFileThatOnlyMentionsTheHeaderIsSomebodysOwn(): void
+    {
+        $mine = "<?php\n\n// My own base class. Not to be confused with files marked\n"
+            . "// GENERATED by anorm-graphql, which this is not.\nclass X {}\n";
+        file_put_contents("$this->dir/X.php", $mine);
+        $writer = new FileWriter();
+        $this->assertFalse($writer->writeGenerated("$this->dir/X.php", self::GENERATED));
+        $this->assertSame($mine, file_get_contents("$this->dir/X.php"));
+        $this->assertStringStartsWith('refused', $writer->report[0]);
+    }
+
+    public function testNothingIsWrittenThroughASymbolicLink(): void
+    {
+        $outside = "$this->dir/outside.php";
+        file_put_contents($outside, self::GENERATED . 'precious');
+        mkdir("$this->dir/out");
+        symlink($outside, "$this->dir/out/X.php");
+
+        $writer = new FileWriter(false, ["$this->dir/out"]);
+        $this->assertFalse($writer->writeGenerated("$this->dir/out/X.php", self::GENERATED . 'clobbered'));
+        $writer->writeOnce("$this->dir/out/X.php", 'clobbered', true);
+        $writer->replace("$this->dir/out/X.php", 'clobbered', 'updated');
+        $this->assertSame(self::GENERATED . 'precious', file_get_contents($outside));
+        $this->assertCount(3, $writer->report);
+        foreach ($writer->report as $line) {
+            $this->assertStringContainsString('symbolic link', $line);
+        }
+    }
+
+    public function testNothingIsWrittenOutsideTheDirectoriesGiven(): void
+    {
+        mkdir("$this->dir/out");
+        mkdir("$this->dir/elsewhere");
+        symlink("$this->dir/elsewhere", "$this->dir/out/Linked");
+
+        $writer = new FileWriter(false, ["$this->dir/out"]);
+        $this->assertFalse($writer->writeGenerated("$this->dir/out/Linked/Base/X.php", self::GENERATED));
+        $this->assertFalse($writer->writeGenerated("$this->dir/out/../escaped.php", self::GENERATED));
+        $this->assertTrue($writer->writeGenerated("$this->dir/out/Fine/Base/X.php", self::GENERATED));
+        $this->assertDirectoryDoesNotExist("$this->dir/elsewhere/Base");
+        $this->assertFileDoesNotExist("$this->dir/escaped.php");
+        $this->assertStringContainsString('outside the directories given', $writer->report[0]);
+    }
+
+    public function testAGivenDirectoryMayItselfBeASymbolicLink(): void
+    {
+        mkdir("$this->dir/real");
+        symlink("$this->dir/real", "$this->dir/out");
+        $writer = new FileWriter(false, ["$this->dir/out"]);
+        $this->assertTrue($writer->writeGenerated("$this->dir/out/A/Base/X.php", self::GENERATED));
+        $this->assertFileExists("$this->dir/real/A/Base/X.php");
+    }
+
     public function testUnchangedGeneratedFileIsReportedCurrent(): void
     {
         $writer = new FileWriter();
@@ -6005,6 +6367,102 @@ class FileWriterTest extends TestCase
         $this->assertFileDoesNotExist("$this->dir/Y.php");
         $this->assertCount(2, $writer->report);
         $this->assertStringContainsString('(dry run)', $writer->report[0]);
+    }
+}
+```
+
+`test/tools/CliTest.php` (it runs the CLI from inside its scratch directory, so that a fallback to a default path could never land in the repository):
+
+```php
+<?php
+
+namespace Anorm\GraphQL\Test\Tools;
+
+use Anorm\GraphQL\Test\TempDir;
+use PHPUnit\Framework\TestCase;
+
+/** The command line itself, run as a process: what it prints and how it exits. */
+class CliTest extends TestCase
+{
+    use TempDir;
+
+    protected function setUp(): void
+    {
+        $this->makeTempDir();
+    }
+
+    protected function tearDown(): void
+    {
+        $this->removeTempDir();
+    }
+
+    /**
+     * @param string[] $arguments
+     * @return array{0: int, 1: string}
+     */
+    private function cli(array $arguments): array
+    {
+        $command = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(dirname(__DIR__, 2) . '/bin/anorm-graphql.php');
+        foreach ($arguments as $argument) {
+            $command .= ' ' . escapeshellarg($argument);
+        }
+        // Run from the scratch directory: if a default path were ever used by mistake, it lands there.
+        exec('cd ' . escapeshellarg($this->dir) . ' && ' . $command . ' 2>&1', $output, $exit);
+        return [$exit, implode("\n", $output)];
+    }
+
+    /** @return string[] */
+    private function make(): array
+    {
+        return [
+            'make',
+            '--models=' . dirname(__DIR__) . '/Fixtures/Model',
+            '-n', 'Anorm\GraphQL\Test\Fixtures\Model',
+            '-o', "$this->dir/Type",
+            '-t', 'Cli\Type',
+            '--tests', 'none',
+            '-s', "$this->dir/ApiSchema.php",
+            '--schema-ns', 'Cli',
+        ];
+    }
+
+    public function testMakeWritesAndExitsZero(): void
+    {
+        [$exit, $output] = $this->cli($this->make());
+        $this->assertSame(0, $exit, $output);
+        $this->assertFileExists("$this->dir/Type/Widget/Base/WidgetTypeBase.php");
+        $this->assertStringContainsString('LedgerLineModel: no single key', $output);
+    }
+
+    public function testAMisspeltOptionIsAnErrorNotADefault(): void
+    {
+        $arguments = $this->make();
+        $arguments[array_search('-o', $arguments, true)] = '--otuput';
+        [$exit, $output] = $this->cli($arguments);
+        $this->assertSame(2, $exit, $output);
+        $this->assertStringContainsString("Unexpected argument '--otuput'", $output);
+        $this->assertSame(['.', '..'], scandir($this->dir), 'nothing may be written, least of all to a default folder');
+    }
+
+    public function testAnUnknownCommandAndAnUnknownModelExitTwo(): void
+    {
+        [$exit, $output] = $this->cli(['bogus']);
+        $this->assertSame(2, $exit);
+        $this->assertStringContainsString("Unknown command 'bogus'", $output);
+
+        [$exit, $output] = $this->cli(array_merge($this->make(), ['--only', 'Nope']));
+        $this->assertSame(2, $exit);
+        $this->assertStringContainsString("--only names 'Nope'", $output);
+    }
+
+    public function testVersionAndHelp(): void
+    {
+        $this->assertSame([0, '0.1.0'], $this->cli(['--version']));
+        [$exit, $output] = $this->cli(['--help']);
+        $this->assertSame(0, $exit);
+        foreach (['--models', '--type-ns', '--schema', '--readonly', '--dry-run', '--force'] as $option) {
+            $this->assertStringContainsString($option, $output);
+        }
     }
 }
 ```
@@ -6165,6 +6623,161 @@ class TypeMakerTest extends TestCase
         $this->assertDirectoryDoesNotExist("$this->dir/tests");
     }
 
+    private function awkward(): TypeMakerOptions
+    {
+        $o = $this->options();
+        $o->modelsDir = dirname(__DIR__) . '/Fixtures/AwkwardModel';
+        $o->modelNamespace = 'Anorm\GraphQL\Test\Fixtures\AwkwardModel';
+        return $o;
+    }
+
+    public function testTwoModelsWithOneEntityNameAreBothSkipped(): void
+    {
+        $report = implode("\n", $this->make($this->awkward())->report);
+        $this->assertDirectoryDoesNotExist("$this->dir/src/Type/Gadget");
+        $this->assertMatchesRegularExpression("/skipped .*AwkwardModel.Gadget: entity 'Gadget' is also produced by .*GadgetModel/", $report);
+        $this->assertMatchesRegularExpression(
+            "/skipped .*AwkwardModel.GadgetModel: entity 'Gadget' is also produced by .*AwkwardModel.Gadget;/",
+            $report
+        );
+        $this->assertStringNotContainsString("'gadgetList'", file_get_contents("$this->dir/src/ApiSchema.php"));
+        $this->assertFileExists("$this->dir/src/Type/Flag/FlagType.php", 'the other models are still generated');
+    }
+
+    public function testAnEntityNamedLikeAReservedWordIsSkipped(): void
+    {
+        $report = implode("\n", $this->make($this->awkward())->report);
+        $this->assertDirectoryDoesNotExist("$this->dir/src/Type/List");
+        $this->assertMatchesRegularExpression("/skipped .*ListModel: entity 'List' is not a name PHP 7.4 allows/", $report);
+        $this->assertStringNotContainsString("'listList'", file_get_contents("$this->dir/src/ApiSchema.php"));
+    }
+
+    public function testNamesReservedOnlyAsClassNamesAreFineAsEntities(): void
+    {
+        $report = implode("\n", $this->make($this->awkward())->report);
+        foreach (['Parent', 'Match'] as $entity) {
+            $this->assertFileExists("$this->dir/src/Type/$entity/Base/{$entity}TypeBase.php");
+            $this->assertStringNotContainsString("entity '$entity'", $report);
+        }
+        // Reserved words are ordinary property names: `type` and `list` become fields.
+        $base = file_get_contents("$this->dir/src/Type/Match/Base/MatchTypeBase.php");
+        $this->assertStringContainsString("FieldBuilder::create('type', Type::string())", $base);
+        $this->assertStringContainsString("FieldBuilder::create('list', Type::int())", $base);
+    }
+
+    public function testFilesOfAnEntityThatCanNoLongerBeProducedAreReported(): void
+    {
+        // As an earlier version of the tool, or an earlier state of the models, would have left them.
+        foreach (['List', 'Gadget'] as $entity) {
+            $stale = "$this->dir/src/Type/$entity/Base/{$entity}TypeBase.php";
+            mkdir(dirname($stale), 0777, true);
+            file_put_contents($stale, "<?php\n\n// GENERATED by anorm-graphql — do not edit.\n");
+        }
+        $report = implode("\n", $this->make($this->awkward())->report);
+        foreach (['List', 'Gadget'] as $entity) {
+            $stale = "$this->dir/src/Type/$entity/Base/{$entity}TypeBase.php";
+            $this->assertStringContainsString("orphaned $stale", $report);
+            $this->assertFileExists($stale, 'reported, never deleted');
+        }
+    }
+
+    public function testWhenEveryModelIsUnusableTheirSchemaEntriesAreStillReported(): void
+    {
+        $models = "$this->dir/models";
+        mkdir("$models/Sub", 0777, true);
+        $model = "<?php\n\nnamespace %s;\n\nclass ClientModel extends \\Anorm\\Model\n{\n    public \$id;\n    public \$name;\n\n"
+            . "    public function __construct(\\PDO \$pdo)\n    {\n        parent::__construct(\$pdo, "
+            . "\\Anorm\\DataMapper::create(\$pdo, 'clients', \\Anorm\\DataMapper::autoMap(\$this)));\n    }\n}\n";
+        file_put_contents("$models/ClientModel.php", sprintf($model, 'Solo\\Models'));
+        $o = $this->options();
+        $o->modelsDir = $models;
+        $o->modelNamespace = 'Solo\Models';
+        $this->make($o);
+        $this->assertStringContainsString("'clientList'", file_get_contents("$this->dir/src/ApiSchema.php"));
+
+        // A second model with the same entity name arrives: now neither can be generated.
+        file_put_contents("$models/Sub/ClientModel.php", sprintf($model, 'Solo\\Models\\Sub'));
+        $report = implode("\n", $this->make($o)->report);
+        $this->assertStringContainsString("orphaned: 'clientList' is marked as generated but no model produces it", $report);
+        $this->assertStringContainsString("orphaned $this->dir/src/Type/Client/Base/ClientTypeBase.php", $report);
+        $this->assertStringContainsString("'clientList'", file_get_contents("$this->dir/src/ApiSchema.php"), 'reported, never deleted');
+    }
+
+    public function testSchemaEntriesOfAnEntityThatCanNoLongerBeProducedAreReported(): void
+    {
+        $o = $this->awkward();
+        $o->only = ['Flag'];
+        $this->make($o);
+        $schema = "$this->dir/src/ApiSchema.php";
+        file_put_contents($schema, str_replace(['flagList', 'FlagType'], ['gadgetList', 'GadgetType'], file_get_contents($schema)));
+
+        $report = implode("\n", $this->make($this->awkward())->report);
+        $this->assertStringContainsString("orphaned: 'gadgetList' is marked as generated but no model produces it", $report);
+    }
+
+    /**
+     * @dataProvider unusableNamespaces
+     */
+    public function testANamespaceThatCannotBeUsedIsAnErrorAndWritesNothing(string $option, string $property): void
+    {
+        $o = $this->options();
+        $o->$property = 'Made\new\Thing';
+        $maker = new TypeMaker($o);
+        $this->assertSame(2, $maker->run());
+        $this->assertStringContainsString("Error: $option '" . 'Made\new\Thing' . "' cannot be used: 'new'", $maker->report[0]);
+        $this->assertDirectoryDoesNotExist("$this->dir/src");
+    }
+
+    /** @return array<string, array<int, string>> */
+    public function unusableNamespaces(): array
+    {
+        return [
+            'types' => ['--type-ns', 'typeNamespace'],
+            'tests' => ['--test-ns', 'testNamespace'],
+            'schema' => ['--schema-ns', 'schemaNamespace'],
+        ];
+    }
+
+    public function testEverythingGeneratedParses(): void
+    {
+        $this->make($this->options());
+        $this->make($this->awkward());
+        $files = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($this->dir, \FilesystemIterator::SKIP_DOTS));
+        $count = 0;
+        foreach ($files as $file) {
+            exec(escapeshellarg(PHP_BINARY) . ' -l ' . escapeshellarg($file->getPathname()) . ' 2>&1', $output, $exit);
+            $this->assertSame(0, $exit, implode("\n", $output));
+            $count++;
+        }
+        $this->assertGreaterThan(10, $count);
+    }
+
+    public function testAnEntityThatBecomesReadOnlyHasItsInputFilesReported(): void
+    {
+        $this->make($this->options());
+        $o = $this->options();
+        $o->readOnly = ['Widget'];
+        $report = implode("\n", $this->make($o)->report);
+        foreach (["$this->dir/src/Type/Widget/WidgetInput.php", "$this->dir/src/Type/Widget/Base/WidgetInputBase.php"] as $path) {
+            $this->assertStringContainsString("orphaned $path ('Widget' is read-only now; not deleted)", $report);
+            $this->assertFileExists($path);
+        }
+    }
+
+    public function testTheWholeRunStaysInsideTheDirectoriesGiven(): void
+    {
+        $this->make($this->options());
+        $outside = "$this->dir/precious.php";
+        file_put_contents($outside, "<?php\n\n// GENERATED by anorm-graphql — do not edit.\n// precious\n");
+        $base = "$this->dir/src/Type/Widget/Base/WidgetTypeBase.php";
+        unlink($base);
+        symlink($outside, $base);
+
+        $report = implode("\n", $this->make($this->options())->report);
+        $this->assertStringContainsString("refused  $base (is a symbolic link)", $report);
+        $this->assertStringContainsString('// precious', file_get_contents($outside));
+    }
+
     public function testASecondRunChangesNothing(): void
     {
         $this->make($this->options());
@@ -6191,7 +6804,13 @@ namespace Anorm\GraphQL\Tools;
 
 use Anorm\GraphQL\Tools\Writer\Php;
 
-/** Writes files under the generator's two rules, and keeps the report. */
+/**
+ * Writes files under the generator's rules, and keeps the report.
+ *
+ * It writes only inside the directories it was given, and never through a symbolic
+ * link: a link under the output directory must not become a way to overwrite a file
+ * somewhere else.
+ */
 class FileWriter
 {
     /** @var string[] One line per file, e.g. 'written  src/...' */
@@ -6200,21 +6819,35 @@ class FileWriter
     /** @var bool */
     private $dryRun;
 
-    public function __construct($dryRun = false)
+    /** @var string[] Canonical directories that writes must stay inside; empty for no restriction */
+    private $roots = array();
+
+    /**
+     * @param bool $dryRun
+     * @param string[] $roots Directories that writes must stay inside
+     */
+    public function __construct($dryRun = false, array $roots = array())
     {
         $this->dryRun = (bool) $dryRun;
+        foreach ($roots as $root) {
+            $this->roots[] = \rtrim($this->canonical($root), '/') . '/';
+        }
     }
 
     /**
      * A file the generator owns. Overwritten every run, but only if what is there
-     * already carries the generated header: a hand-written file is never clobbered.
+     * already begins with the generated header: a hand-written file is never clobbered,
+     * not even one that quotes the header somewhere.
      *
      * @return bool false when refused
      */
     public function writeGenerated($path, $content)
     {
-        if (\file_exists($path) && \strpos((string) \file_get_contents($path), Php::HEADER) === false) {
-            $this->report[] = "refused  $path (exists without the generated header; move it aside to regenerate)";
+        if ($this->refuse($path)) {
+            return false;
+        }
+        if (\file_exists($path) && !Php::isGenerated((string) \file_get_contents($path))) {
+            $this->report[] = "refused  $path (exists and does not begin with the generated header; move it aside to regenerate)";
             return false;
         }
         if (\file_exists($path) && \file_get_contents($path) === $content) {
@@ -6230,6 +6863,9 @@ class FileWriter
      */
     public function writeOnce($path, $content, $force = false)
     {
+        if ($this->refuse($path)) {
+            return;
+        }
         if (\file_exists($path) && !$force) {
             $this->report[] = "kept     $path";
             return;
@@ -6240,7 +6876,48 @@ class FileWriter
     /** Replace a file's content outright; for the schema, whose edit is computed elsewhere. */
     public function replace($path, $content, $verb)
     {
+        if ($this->refuse($path)) {
+            return;
+        }
         $this->put($path, $content, \str_pad($verb, 8));
+    }
+
+    /** @return bool true, having said why, when $path must not be written */
+    private function refuse($path)
+    {
+        if (\is_link($path)) {
+            $this->report[] = "refused  $path (is a symbolic link)";
+            return true;
+        }
+        if (!$this->roots) {
+            return false;
+        }
+        $canonical = $this->canonical($path);
+        foreach ($this->roots as $root) {
+            if (\strpos($canonical, $root) === 0) {
+                return false;
+            }
+        }
+        $this->report[] = "refused  $path (resolves to $canonical, outside the directories given)";
+        return true;
+    }
+
+    /**
+     * The real path of something that may not exist yet: the real path of its deepest
+     * existing ancestor, plus the rest.
+     */
+    private function canonical($path)
+    {
+        if ($path === '' || $path[0] !== '/') {
+            $path = \getcwd() . '/' . $path;
+        }
+        $rest = '';
+        while (!\file_exists($path) && \dirname($path) !== $path) {
+            $rest = '/' . \basename($path) . $rest;
+            $path = \dirname($path);
+        }
+        $real = \realpath($path);
+        return ($real === false ? $path : $real) . $rest;
     }
 
     private function put($path, $content, $verb)
@@ -6307,6 +6984,7 @@ use Anorm\GraphQL\Tools\Schema\SchemaEditor;
 use Anorm\GraphQL\Tools\Schema\SchemaScaffolder;
 use Anorm\GraphQL\Tools\Writer\InputBaseWriter;
 use Anorm\GraphQL\Tools\Writer\InputWriter;
+use Anorm\GraphQL\Tools\Writer\Php;
 use Anorm\GraphQL\Tools\Writer\TestCaseWriter;
 use Anorm\GraphQL\Tools\Writer\TestWriter;
 use Anorm\GraphQL\Tools\Writer\TypeBaseWriter;
@@ -6322,6 +7000,9 @@ class TypeMaker
     /** @var TypeMakerOptions */
     private $options;
 
+    /** @var array<string, string> Model class => why its generated code was not written */
+    private $unparseable = array();
+
     public function __construct(TypeMakerOptions $options)
     {
         $this->options = $options;
@@ -6333,14 +7014,40 @@ class TypeMaker
     public function run()
     {
         $o = $this->options;
+        $namespaces = array('--type-ns' => $o->typeNamespace);
+        if ($o->testsDir !== null) {
+            $namespaces['--test-ns'] = $o->testNamespace;
+        }
+        if ($o->schemaPath !== null) {
+            $namespaces['--schema-ns'] = $o->schemaNamespace;
+        }
+        foreach ($namespaces as $option => $namespace) {
+            $bad = Php::unusableSegment($namespace);
+            if ($bad !== null) {
+                $this->report[] = "Error: $option '$namespace' cannot be used: '$bad' is not a name PHP 7.4 allows in a namespace";
+                return 2;
+            }
+        }
+
         $locator = new ModelLocator(new NullPdo());
         $models = $locator->locate($o->modelsDir, $o->modelNamespace);
         \ksort($models, SORT_STRING);
 
         $builder = new TypeInfoBuilder($o->classSuffix);
         $known = array();
+        $unusable = array();
         foreach ($models as $class => $model) {
-            $known[$builder->entityName($class)] = $class;
+            $entity = $builder->entityName($class);
+            if (isset($known[$entity])) {
+                // Two models, one set of files: neither can have them. Say so for both.
+                $unusable[$class] = "entity '$entity' is also produced by {$known[$entity]}; rename one of the models";
+                $unusable[$known[$entity]] = "entity '$entity' is also produced by $class; rename one of the models";
+                continue;
+            }
+            $known[$entity] = $class;
+            if (Php::unusableSegment($entity) !== null) {
+                $unusable[$class] = "entity '$entity' is not a name PHP 7.4 allows in a namespace; rename the model";
+            }
         }
         foreach (array('only' => $o->only, 'readonly' => $o->readOnly) as $option => $names) {
             foreach ($names as $name) {
@@ -6359,16 +7066,30 @@ class TypeMaker
             if ($only && !\in_array($entity, $only, true)) {
                 continue;
             }
+            if (isset($unusable[$class])) {
+                continue;
+            }
             $info = $builder->build($model, \in_array($entity, $readOnly, true));
             if ($info !== null) {
                 $infos[] = $info;
             }
         }
 
-        $files = new FileWriter($o->dryRun);
-        foreach ($infos as $info) {
-            $this->writeEntity($files, $info);
+        $roots = array($o->outputDir);
+        if ($o->testsDir !== null) {
+            $roots[] = $o->testsDir;
         }
+        if ($o->schemaPath !== null) {
+            $roots[] = \dirname($o->schemaPath);
+        }
+        $files = new FileWriter($o->dryRun, $roots);
+        foreach ($infos as $i => $info) {
+            if (!$this->writeEntity($files, $info)) {
+                // Keep the schema from gaining entries for Types that were not written.
+                unset($infos[$i]);
+            }
+        }
+        $infos = \array_values($infos);
         if ($o->testsDir !== null && $infos) {
             $schemaClass = \trim($o->schemaNamespace, '\\') . '\\' . $this->schemaClassName();
             $files->writeOnce(
@@ -6377,42 +7098,83 @@ class TypeMaker
                 false
             );
         }
-        $schemaLines = $o->schemaPath === null ? array() : $this->maintainSchema($files, $infos, \array_keys($known));
+        // An entity no model can produce any more, whether its model has gone or it is
+        // skipped for good, leaves its files and its schema entries behind.
+        $producible = array();
+        foreach ($known as $entity => $class) {
+            if (!isset($unusable[$class]) && !isset($this->unparseable[$class])) {
+                $producible[] = $entity;
+            }
+        }
+        $schemaLines = $o->schemaPath === null ? array() : $this->maintainSchema($files, $infos, $producible);
 
         $this->report = \array_merge($this->report, $files->report);
-        foreach ($this->orphans(\array_keys($known)) as $path) {
+        foreach ($this->orphans($producible) as $path) {
             $this->report[] = "orphaned $path (no model produces it; not deleted)";
         }
-        foreach ($locator->skipped + $builder->skipped as $what => $why) {
+        foreach ($infos as $info) {
+            foreach ($this->staleInputs($info) as $path) {
+                $this->report[] = "orphaned $path ('{$info->entity}' is read-only now; not deleted)";
+            }
+        }
+        foreach ($locator->skipped + $builder->skipped + $unusable + $this->unparseable as $what => $why) {
             $this->report[] = "skipped  $what: $why";
         }
         $this->report = \array_merge($this->report, $schemaLines);
         return 0;
     }
 
+    /**
+     * @return bool false when nothing was written because the entity's code would not parse
+     */
     private function writeEntity(FileWriter $files, TypeInfo $info)
     {
         $o = $this->options;
         $dir = $this->join($o->outputDir, $info->entity);
-        $files->writeGenerated(
-            "$dir/Base/{$info->entity}TypeBase.php",
-            (new TypeBaseWriter())->render($info, $o->typeNamespace)
-        );
-        $files->writeOnce("$dir/{$info->entity}Type.php", (new TypeWriter())->render($info, $o->typeNamespace), $o->force);
+        $generated = array("$dir/Base/{$info->entity}TypeBase.php" => (new TypeBaseWriter())->render($info, $o->typeNamespace));
+        $once = array("$dir/{$info->entity}Type.php" => (new TypeWriter())->render($info, $o->typeNamespace));
         if (!$info->readOnly) {
-            $files->writeGenerated(
-                "$dir/Base/{$info->entity}InputBase.php",
-                (new InputBaseWriter())->render($info, $o->typeNamespace)
-            );
-            $files->writeOnce("$dir/{$info->entity}Input.php", (new InputWriter())->render($info, $o->typeNamespace), $o->force);
+            $generated["$dir/Base/{$info->entity}InputBase.php"] = (new InputBaseWriter())->render($info, $o->typeNamespace);
+            $once["$dir/{$info->entity}Input.php"] = (new InputWriter())->render($info, $o->typeNamespace);
         }
         if ($o->testsDir !== null) {
-            $files->writeOnce(
-                $this->join($o->testsDir, "{$info->entity}TypeTest.php"),
-                (new TestWriter())->render($info, $o->typeNamespace, $o->testNamespace),
-                $o->force
-            );
+            $once[$this->join($o->testsDir, "{$info->entity}TypeTest.php")]
+                = (new TestWriter())->render($info, $o->typeNamespace, $o->testNamespace);
         }
+
+        // Never write PHP that does not parse. A property or class name the templates
+        // cannot carry is the likeliest cause, and it spoils every file of the entity.
+        foreach ($generated + $once as $path => $code) {
+            $problem = Php::parseError($code);
+            if ($problem !== null) {
+                $this->unparseable[$info->modelClass] = "the code generated for '{$info->entity}' would not parse ($problem); nothing written for it";
+                return false;
+            }
+        }
+        foreach ($generated as $path => $code) {
+            $files->writeGenerated($path, $code);
+        }
+        foreach ($once as $path => $code) {
+            $files->writeOnce($path, $code, $o->force);
+        }
+        return true;
+    }
+
+    /**
+     * Input files left behind by an entity that has since become read-only.
+     *
+     * @return string[]
+     */
+    private function staleInputs(TypeInfo $info)
+    {
+        if (!$info->readOnly) {
+            return array();
+        }
+        $dir = $this->join($this->options->outputDir, $info->entity);
+        return \array_values(\array_filter(
+            array("$dir/Base/{$info->entity}InputBase.php", "$dir/{$info->entity}Input.php"),
+            'file_exists'
+        ));
     }
 
     /**
@@ -6505,7 +7267,7 @@ class TypeMaker
 - [ ] **Step 4: Run the tests to see them pass**
 
 Run: `docker/anorm-graphql test --testsuite tools`
-Expected: `OK (89 tests, ...)`
+Expected: `OK (114 tests, ...)` once the CLI of Step 5 exists; before it, `CliTest` fails, and the rest pass
 
 - [ ] **Step 5: Write the CLI**
 
@@ -6542,6 +7304,9 @@ class App
     /** @var Arguments */
     public $options;
 
+    /** @var string[] Arguments that are neither the command nor an option this tool has */
+    public $unexpected = array();
+
     /**
      * @param string[] $argv Without the program name
      */
@@ -6570,6 +7335,9 @@ class App
         if (\count($positional) >= 1) {
             $this->command = \array_shift($positional);
         }
+        // The parser is lenient: a misspelt option lands here, and its default would be
+        // used without a word. Writing to the default folder by accident is not lenient.
+        $this->unexpected = $positional;
     }
 
     /** @return int The process exit code */
@@ -6583,6 +7351,11 @@ class App
         if ($this->options['version']) {
             echo ANORM_GRAPHQL_VERSION . PHP_EOL;
             return 0;
+        }
+        if ($this->unexpected) {
+            echo self::TITLE . PHP_EOL;
+            \printf("Error: Unexpected argument '%s', try '--help'\n", $this->unexpected[0]);
+            return 2;
         }
         if ($this->command !== 'make') {
             echo self::TITLE . PHP_EOL;
@@ -6695,7 +7468,7 @@ Confirm against spec §5 and §6, with file and line:
   - abstract: `createContainer(): Container`, `createSchema(Container $container): Schema`, `typeClass(): string`, `inputClass(): ?string`, `entityName(): string`, `expectedFieldTypes(): array`
   - overridable: `sampleInput(): array`, `sampleUpdate(): array`, `keyField(): string`
   - helpers for a project's own tests: `execute(string $query, array $variables = []): array`, `useDatabase(): void`, `listAll()`, `listWhere(array $selector)`, `upsert(array $inputs)`
-  - inherited tests: `testTypeHasTheExpectedFields`, `testInputMirrorsTheType`, `testListReturnsAList`, `testLifecycle`
+  - inherited tests: `testTypeHasTheExpectedFields`, `testInputMirrorsTheType`, `testListReturnsAList`, `testLifecycle` (which, when `sampleUpdate()` is empty, asserts create, view and delete and then marks itself INCOMPLETE rather than pass the update off as tested)
 
 The end-to-end test runs the generated code in **child processes**. Each test generates afresh, and a second `require` of a regenerated class in the same process would be a fatal "cannot redeclare".
 
@@ -6785,6 +7558,23 @@ PHP
         $this->assertSame(0, $exit, $output);
         $this->assertStringContainsString('OK (', $output);
         $this->assertStringNotContainsString('Skipped', $output, 'nothing generated should need skipping');
+    }
+
+    public function testAnEmptySampleUpdateIsReportedIncompleteNotPassedInSilence(): void
+    {
+        $test = "$this->dir/tests/WidgetTypeTest.php";
+        $emptied = preg_replace("/('name' => 'name 2',\n)/", '', file_get_contents($test), 1, $count);
+        $this->assertSame(1, $count);
+        file_put_contents($test, $emptied);
+
+        $phpunit = dirname(__DIR__, 2) . '/vendor/bin/phpunit';
+        [$exit, $output] = $this->runPhp(
+            'php ' . escapeshellarg($phpunit) . ' --no-configuration --verbose --bootstrap '
+            . escapeshellarg("$this->dir/bootstrap.php") . ' ' . escapeshellarg($test)
+        );
+        $this->assertSame(0, $exit, $output);
+        $this->assertStringContainsString('Incomplete: 1', $output);
+        $this->assertStringContainsString('sampleUpdate() is empty, so updating was not exercised', $output);
     }
 
     public function testAQueryThroughTheGeneratedSchema(): void
@@ -7004,6 +7794,11 @@ abstract class ModelTypeTestCase extends TestCase
         $this->assertEquals($id, $deleted[0][$key]);
         $this->assertCount(0, $this->listWhere([$key => $id]), 'the deleted row should be gone');
         $this->assertCount($before + 1, $this->listAll());
+
+        if (!$this->sampleUpdate()) {
+            // Create, view and delete were exercised; saying nothing would pass the update off as tested.
+            $this->markTestIncomplete('sampleUpdate() is empty, so updating was not exercised');
+        }
     }
 
     /**
@@ -7078,12 +7873,12 @@ abstract class ModelTypeTestCase extends TestCase
 - [ ] **Step 4: Run the whole integration suite**
 
 Run: `docker/anorm-graphql test --testsuite integration`
-Expected: `OK (44 tests, ...)`
+Expected: `OK (45 tests, ...)`
 
 - [ ] **Step 5: Run everything, with quality**
 
 Run: `docker/anorm-graphql ci`
-Expected: all suites pass (144 tests), phpcs clean, phpstan `[OK] No errors`.
+Expected: all suites pass (170 tests), phpcs clean, phpstan `[OK] No errors`.
 
 - [ ] **Step 6: Commit**
 
