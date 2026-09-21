@@ -329,6 +329,38 @@ class ModelTypeTest extends TestCase
         }
     }
 
+    public function testAnImplicitCommitThatThenSucceedsIsReportedForWhatItIs(): void
+    {
+        TestEnvironment::pdo()->beginTransaction();
+        $this->type->ddlInBeforeWrite = true;
+        try {
+            $this->upsert([['name' => 'a']]);
+            $this->fail('expected the lost savepoint to be reported');
+        } catch (\PDOException $e) {
+            $this->fail('a bare driver error explains nothing: ' . $e->getMessage());
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('committed implicitly', $e->getMessage());
+            $this->assertInstanceOf(\PDOException::class, $e->getPrevious(), 'the driver error is kept as the cause');
+        }
+    }
+
+    public function testAnImplicitCommitWithNoOuterTransactionNeverSurfacesAsADriverError(): void
+    {
+        // With no savepoint to miss, PHP 7.4's PDO cannot tell that the transaction it
+        // began has gone, and commit() succeeds; PHP 8 notices and throws. Either way
+        // the caller must not be handed a bare PDOException.
+        $this->type->ddlInBeforeWrite = true;
+        try {
+            $rows = $this->upsert([['name' => 'a']]);
+            $this->assertSame('a', $rows[0]['name']);
+        } catch (\PDOException $e) {
+            $this->fail('a bare driver error explains nothing: ' . $e->getMessage());
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('committed implicitly', $e->getMessage());
+        }
+        $this->assertSame(1, $this->rowCount(), 'DDL committed the row; nothing can take that back');
+    }
+
     public function testOneFailingRowRollsBackTheWholeUpsert(): void
     {
         $this->type->failOnName = 'b';

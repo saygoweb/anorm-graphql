@@ -184,7 +184,11 @@ abstract class ModelType extends ObjectType
 
         if ($mango !== null) {
             if ($mango->hasSort()) {
-                $builder->orderBy((new MangoQueryParser($mapper))->parseSort($mango->sort));
+                try {
+                    $builder->orderBy((new MangoQueryParser($mapper))->parseSort($mango->sort));
+                } catch (\InvalidArgumentException | \TypeError $e) {
+                    throw new UserError("Argument 'query.sort' is not valid");
+                }
             }
             if ($mango->limit !== null) {
                 $builder->limit($mango->limit, $mango->skip === null ? 0 : $mango->skip);
@@ -365,10 +369,24 @@ abstract class ModelType extends ObjectType
             }
             throw $e;
         }
-        if ($savepoint !== null) {
-            $pdo->exec('RELEASE SAVEPOINT ' . $savepoint);
-        } else {
-            $pdo->commit();
+        try {
+            if ($savepoint !== null) {
+                $pdo->exec('RELEASE SAVEPOINT ' . $savepoint);
+            } else {
+                $pdo->commit();
+            }
+        } catch (\Throwable $e) {
+            // Nothing in $work failed, yet the transaction it ran in is gone. In MySQL
+            // that means a statement committed implicitly, which DDL does. It cannot be
+            // undone from here, so say exactly what happened rather than let a bare
+            // "SAVEPOINT does not exist" reach whoever has to work it out.
+            throw new \RuntimeException(
+                get_class($this) . ': a statement inside this mutation committed implicitly (DDL does, in MySQL). '
+                . 'Its rows, and any transaction the caller had open, are already committed, so all-or-nothing '
+                . 'could not be honoured. Do not run DDL from authorize(), beforeWrite() or a model.',
+                0,
+                $e
+            );
         }
         return $result;
     }

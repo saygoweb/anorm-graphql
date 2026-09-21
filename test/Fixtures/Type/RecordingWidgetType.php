@@ -25,6 +25,9 @@ class RecordingWidgetType extends ModelType
     /** @var string|null Throw from beforeWrite() when the model has this name */
     public $failOnName = null;
 
+    /** @var bool Run DDL in beforeWrite() and carry on as if nothing had happened */
+    public $ddlInBeforeWrite = false;
+
     /** @var bool Run DDL just before failing: MySQL commits implicitly, taking any savepoint with it */
     public $ddlBeforeFailing = false;
 
@@ -60,12 +63,21 @@ class RecordingWidgetType extends ModelType
     {
         /** @var WidgetModel $model */
         $this->written[] = [$model->name, $isUpdate];
+        if ($this->ddlInBeforeWrite) {
+            $this->runDdl($model);
+        }
         if ($this->failOnName !== null && $model->name === $this->failOnName) {
             if ($this->ddlBeforeFailing) {
-                $model->getPdo()->exec('CREATE TABLE IF NOT EXISTS `agq_implicit_commit` (`id` INT)');
-                $model->getPdo()->exec('DROP TABLE `agq_implicit_commit`');
+                $this->runDdl($model);
             }
             throw new \RuntimeException('beforeWrite failed on ' . $model->name);
         }
+    }
+
+    /** Any DDL will do: MySQL commits implicitly, taking the transaction and its savepoints with it. */
+    private function runDdl(Model $model): void
+    {
+        $model->getPdo()->exec('CREATE TABLE IF NOT EXISTS `agq_implicit_commit` (`id` INT)');
+        $model->getPdo()->exec('DROP TABLE `agq_implicit_commit`');
     }
 }
