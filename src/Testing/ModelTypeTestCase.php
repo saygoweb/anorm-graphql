@@ -2,6 +2,7 @@
 
 namespace Anorm\GraphQL\Testing;
 
+use Anorm\GraphQL\ModelType;
 use DI\Container;
 use GraphQL\Error\DebugFlag;
 use GraphQL\GraphQL;
@@ -13,7 +14,10 @@ use PHPUnit\Framework\TestCase;
  * the project's own TestCase supplies the container and the schema.
  *
  * Nothing is truncated. Each test runs inside a transaction that tearDown rolls
- * back, so pointing this at a database with real data in it costs nothing.
+ * back. That only cleans up where the table's storage engine has transactions: on a
+ * MyISAM table a rollback does nothing, and the rows a test wrote would stay for good.
+ * So before it writes, the lifecycle test checks the engine, and skips itself, saying
+ * why, rather than leave rows behind in somebody's database.
  */
 abstract class ModelTypeTestCase extends TestCase
 {
@@ -54,6 +58,15 @@ abstract class ModelTypeTestCase extends TestCase
     protected function keyField(): string
     {
         return 'id';
+    }
+
+    /**
+     * Return true to let the lifecycle test write to a table whose engine has no
+     * transactions. Its rows will NOT be cleaned up. Only for a throwaway database.
+     */
+    protected function allowNonTransactionalTables(): bool
+    {
+        return false;
     }
 
     protected function setUp(): void
@@ -118,13 +131,15 @@ abstract class ModelTypeTestCase extends TestCase
             $this->markTestSkipped('sampleInput() is empty');
         }
         $this->useDatabase();
+        $this->requireTransactionalTable();
         $key = $this->keyField();
         $prefix = $this->entityName();
         $before = count($this->listAll());
 
         $created = $this->upsert([$this->sampleInput(), $this->sampleInput()]);
         $this->assertCount(2, $created, 'upsert should return both created rows');
-        $this->assertNotEmpty($created[0][$key], 'a created row should come back with its key');
+        $this->assertNotNull($created[0][$key], 'a created row should come back with its key');
+        $this->assertNotSame('', $created[0][$key], 'a created row should come back with its key');
         foreach ($this->sampleInput() as $name => $value) {
             $this->assertEquals($value, $created[0][$name], "created $name");
         }
@@ -179,6 +194,39 @@ abstract class ModelTypeTestCase extends TestCase
         return $result['data'];
     }
 
+    /**
+     * Skip, before anything is written, when the Type's table cannot roll back.
+     *
+     * MySQL and MariaDB say per engine whether it has transactions. Any other database,
+     * or a Type that is not a ModelType, is left to the project's own judgement.
+     */
+    private function requireTransactionalTable(): void
+    {
+        $type = $this->container->get($this->typeClass());
+        if (!$type instanceof ModelType || $this->pdo === null || $this->allowNonTransactionalTables()) {
+            return;
+        }
+        $table = $type->tableName($this->container);
+        try {
+            $statement = $this->pdo->prepare(
+                'SELECT t.ENGINE, e.TRANSACTIONS FROM information_schema.TABLES t'
+                . ' LEFT JOIN information_schema.ENGINES e ON e.ENGINE = t.ENGINE'
+                . ' WHERE t.TABLE_SCHEMA = DATABASE() AND t.TABLE_NAME = ?'
+            );
+            $statement->execute([$table]);
+            $row = $statement->fetch(\PDO::FETCH_NUM);
+        } catch (\PDOException $e) {
+            return;
+        }
+        if (is_array($row) && strtoupper((string) $row[1]) === 'NO') {
+            $this->markTestSkipped(
+                "Table '$table' uses the {$row[0]} engine, which has no transactions: this test's rows could not be "
+                . 'rolled back and would stay in the database. Convert the table to InnoDB in the test database, or '
+                . 'override allowNonTransactionalTables() if leaving rows behind is acceptable there.'
+            );
+        }
+    }
+
     /** Begin the transaction that tearDown rolls back. */
     protected function useDatabase(): void
     {
@@ -220,7 +268,8 @@ abstract class ModelTypeTestCase extends TestCase
     protected function upsert(array $inputs): array
     {
         $prefix = $this->entityName();
-        $inputType = ucfirst($prefix) . 'Input';
+        // The Input's own GraphQL name, rather than a guess from the prefix.
+        $inputType = $this->container->get((string) $this->inputClass())->name;
         return $this->execute(
             "mutation (\$input: [{$inputType}!]!) { {$prefix}Upsert(input: \$input) { {$this->selection()} } }",
             ['input' => $inputs]

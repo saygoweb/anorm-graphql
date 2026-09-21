@@ -336,9 +336,20 @@ test (list is empty → upsert two rows → list returns two → a Mango selecto
 key returns exactly one → upsert with `id` updates in place → delete returns the row
 → list no longer contains it).
 
-- **Rollback, not truncation.** `setUp` begins a transaction on the container's PDO
-  and `tearDown` rolls it back. Nothing is ever truncated, so pointing the suite at
-  a database with real data in it costs nothing.
+- **Rollback, not truncation.** The lifecycle test begins a transaction on the
+  container's PDO and `tearDown` rolls it back. Nothing is ever truncated.
+- **A table that cannot roll back is not written to.** A rollback only cleans up where
+  the table's storage engine has transactions. On a MyISAM table, as older applications
+  often have, it does nothing, and a test's rows would stay in the database for good.
+  So before it writes, the lifecycle test asks MySQL or MariaDB whether the Type's
+  table has transactions, and if not it skips itself and says why. Convert the table
+  to InnoDB in the test database, or override `allowNonTransactionalTables()` to return
+  `true` where leaving rows behind is acceptable. The check covers the Type's own
+  table only: a parent row you create in `sampleInput()` in some other table is yours
+  to look after, and on another database the check is not made at all.
+- **The models must use the container's PDO.** Cleanup rolls back
+  `$container->get(\PDO::class)`. A model that connects some other way writes outside
+  that transaction.
 - **Foreign keys are left out of `sampleInput()` on purpose.** The generator cannot
   know a valid parent row. The generated file says so in a comment at that spot:
 
@@ -469,6 +480,11 @@ a client-safe `GraphQL\Error\UserError`, never an internal server error.
   during a write, and DDL commits implicitly in MySQL, which would silently commit
   both the rows before it and the caller's own transaction. `resolveUpsert` and
   `resolveDelete` throw a `LogicException` for such a model.
+- **`MangoInput.action` does nothing.** The field is part of the input shape carried over
+  from earlier projects. `ModelType` does not read it, and a value sent in it is ignored.
+- **The command line prints errors to standard output**, as Anorm's does, not to standard
+  error. Rely on the exit code (0, or 2 for a bad argument), not on which stream a message
+  arrives on.
 - **Composite keys are not supported.** A table with a composite key (see
   `LedgerLineModel` above) is skipped; hand-write its Type. A table with a *fixed
   discriminator plus a single key* — several kinds of row told apart by one column,

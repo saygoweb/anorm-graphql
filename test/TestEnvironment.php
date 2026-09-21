@@ -56,11 +56,19 @@ class TestEnvironment
         $pdo->exec('DROP TABLE IF EXISTS `widgets`');
         $pdo->exec('DROP TABLE IF EXISTS `owners`');
         $pdo->exec('DROP TABLE IF EXISTS `documents`');
+        $pdo->exec('DROP TABLE IF EXISTS `legacy_widgets`');
         $pdo->exec(
             'CREATE TABLE `owners` (
                 `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
                 `name` VARCHAR(255) NULL
             ) ENGINE=InnoDB'
+        );
+        // MyISAM has no transactions, as older applications' tables often do not.
+        $pdo->exec(
+            'CREATE TABLE `legacy_widgets` (
+                `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                `name` VARCHAR(255) NULL
+            ) ENGINE=MyISAM'
         );
         $pdo->exec(
             'CREATE TABLE `documents` (

@@ -14,8 +14,10 @@ them is fabricated.
 
 ## A rights check in `authorize()`
 
+Declared in `ModelType` as a method that does nothing. It is not abstract: override it as shown below.
+
 ```php
-abstract protected function authorize(string $verb, ?Model $model, Container $context): void;
+protected function authorize(string $verb, ?Model $model, Container $context): void
 ```
 
 Verbs are the `ModelType::VERB_*` constants: `VERB_LIST`, `VERB_CREATE`,
@@ -52,8 +54,10 @@ class WidgetType extends WidgetTypeBase
 
 ## Stamping columns in `beforeWrite()`
 
+Declared in `ModelType` as a method that does nothing. It is not abstract: override it as shown below.
+
 ```php
-abstract protected function beforeWrite(Model $model, array $input, bool $isUpdate, Container $context): void;
+protected function beforeWrite(Model $model, array $input, bool $isUpdate, Container $context): void
 ```
 
 Called after the input has been applied to the model (`Mapper::toModel`) and before
@@ -85,8 +89,11 @@ class WidgetType extends WidgetTypeBase
 
 ## A computed field via `fields()`
 
+Abstract in `ModelType`, and implemented by the generated base class. In your own Type, override it and
+call the parent, as shown below.
+
 ```php
-abstract protected function fields(): array;
+protected function fields(): array
 ```
 
 `fields()` returns the array `ObjectBuilder::setFields()` is built from. Add to it

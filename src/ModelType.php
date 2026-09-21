@@ -67,6 +67,15 @@ abstract class ModelType extends ObjectType
     }
 
     /**
+     * The table this Type reads and writes. For tooling: the test case uses it to check
+     * that the table can take part in a transaction before it writes to it.
+     */
+    public function tableName(Container $context): string
+    {
+        return (string) $this->newModel($context)->mapper()->table;
+    }
+
+    /**
      * Throw to refuse. $model is null for list and create.
      */
     protected function authorize(string $verb, ?Model $model, Container $context): void
