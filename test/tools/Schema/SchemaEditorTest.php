@@ -102,6 +102,33 @@ class SchemaEditorTest extends SchemaProbe
         $this->assertSame($source, $this->edit($source, [])->source);
     }
 
+    public function testWithNoEntitiesAtAllLeftoverEntriesAreStillReported(): void
+    {
+        // Every model of a run can turn out unusable: two of them sharing one entity name, say.
+        $first = $this->edit($this->schema(''), [$this->info('Client')]);
+        $none = $this->edit($first->source, [], []);
+        $this->assertFalse($none->failed);
+        $this->assertSame($first->source, $none->source, 'nothing to write, so nothing changes');
+        $this->assertSame(
+            [
+                "orphaned: 'clientList' is marked as generated but no model produces it",
+                "orphaned: 'clientDelete' is marked as generated but no model produces it",
+                "orphaned: 'clientUpsert' is marked as generated but no model produces it",
+            ],
+            $none->messages
+        );
+        $this->assertSame([], $this->edit($first->source, [], ['Client'])->messages, 'still produced, merely not in this run');
+    }
+
+    public function testWithNoEntitiesAFileItCannotReadIsLeftInPeace(): void
+    {
+        $source = $this->fixture('unparseable.in');
+        $result = $this->edit($source, [], []);
+        $this->assertFalse($result->failed, 'nothing was going to be written, so nothing was refused');
+        $this->assertSame($source, $result->source);
+        $this->assertSame([], $result->messages);
+    }
+
     public function testAnEntityLeftOutOfThisRunIsNotAnOrphan(): void
     {
         $both = [$this->info('Client'), $this->info('Owner')];

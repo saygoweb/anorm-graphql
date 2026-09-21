@@ -209,6 +209,28 @@ class TypeMakerTest extends TestCase
         }
     }
 
+    public function testWhenEveryModelIsUnusableTheirSchemaEntriesAreStillReported(): void
+    {
+        $models = "$this->dir/models";
+        mkdir("$models/Sub", 0777, true);
+        $model = "<?php\n\nnamespace %s;\n\nclass ClientModel extends \\Anorm\\Model\n{\n    public \$id;\n    public \$name;\n\n"
+            . "    public function __construct(\\PDO \$pdo)\n    {\n        parent::__construct(\$pdo, "
+            . "\\Anorm\\DataMapper::create(\$pdo, 'clients', \\Anorm\\DataMapper::autoMap(\$this)));\n    }\n}\n";
+        file_put_contents("$models/ClientModel.php", sprintf($model, 'Solo\\Models'));
+        $o = $this->options();
+        $o->modelsDir = $models;
+        $o->modelNamespace = 'Solo\Models';
+        $this->make($o);
+        $this->assertStringContainsString("'clientList'", file_get_contents("$this->dir/src/ApiSchema.php"));
+
+        // A second model with the same entity name arrives: now neither can be generated.
+        file_put_contents("$models/Sub/ClientModel.php", sprintf($model, 'Solo\\Models\\Sub'));
+        $report = implode("\n", $this->make($o)->report);
+        $this->assertStringContainsString("orphaned: 'clientList' is marked as generated but no model produces it", $report);
+        $this->assertStringContainsString("orphaned $this->dir/src/Type/Client/Base/ClientTypeBase.php", $report);
+        $this->assertStringContainsString("'clientList'", file_get_contents("$this->dir/src/ApiSchema.php"), 'reported, never deleted');
+    }
+
     public function testSchemaEntriesOfAnEntityThatCanNoLongerBeProducedAreReported(): void
     {
         $o = $this->awkward();

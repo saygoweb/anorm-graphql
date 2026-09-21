@@ -37,9 +37,8 @@ class SchemaEditor
     {
         $result = new SchemaEditResult();
         $result->source = $source;
-        if (!$infos) {
-            return $result;
-        }
+        // With no entities there is nothing to write, but there may still be something to
+        // say: entries marked as generated whose entity no model produces any more.
 
         $desired = array('query' => array(), 'mutation' => array());
         foreach ($infos as $info) {
@@ -106,6 +105,10 @@ class SchemaEditor
                 );
             }
         } catch (SchemaShapeException $e) {
+            if (!$infos) {
+                // Nothing was going to be written, so there is nothing to refuse or to paste.
+                return $result;
+            }
             return $this->failure($result, $desired, $e->getMessage());
         }
 
