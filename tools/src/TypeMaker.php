@@ -5,6 +5,7 @@ use Anorm\GraphQL\Tools\Schema\SchemaEditor;
 use Anorm\GraphQL\Tools\Schema\SchemaScaffolder;
 use Anorm\GraphQL\Tools\Writer\InputBaseWriter;
 use Anorm\GraphQL\Tools\Writer\InputWriter;
+use Anorm\GraphQL\Tools\Writer\Php;
 use Anorm\GraphQL\Tools\Writer\TestCaseWriter;
 use Anorm\GraphQL\Tools\Writer\TestWriter;
 use Anorm\GraphQL\Tools\Writer\TypeBaseWriter;
@@ -20,6 +21,9 @@ class TypeMaker
     /** @var TypeMakerOptions */
     private $options;
 
+    /** @var array<string, string> Model class => why its generated code was not written */
+    private $unparseable = array();
+
     public function __construct(TypeMakerOptions $options)
     {
         $this->options = $options;
@@ -31,14 +35,40 @@ class TypeMaker
     public function run()
     {
         $o = $this->options;
+        $namespaces = array('--type-ns' => $o->typeNamespace);
+        if ($o->testsDir !== null) {
+            $namespaces['--test-ns'] = $o->testNamespace;
+        }
+        if ($o->schemaPath !== null) {
+            $namespaces['--schema-ns'] = $o->schemaNamespace;
+        }
+        foreach ($namespaces as $option => $namespace) {
+            $bad = Php::unusableSegment($namespace);
+            if ($bad !== null) {
+                $this->report[] = "Error: $option '$namespace' cannot be used: '$bad' is not a name PHP 7.4 allows in a namespace";
+                return 2;
+            }
+        }
+
         $locator = new ModelLocator(new NullPdo());
         $models = $locator->locate($o->modelsDir, $o->modelNamespace);
         \ksort($models, SORT_STRING);
 
         $builder = new TypeInfoBuilder($o->classSuffix);
         $known = array();
+        $unusable = array();
         foreach ($models as $class => $model) {
-            $known[$builder->entityName($class)] = $class;
+            $entity = $builder->entityName($class);
+            if (isset($known[$entity])) {
+                // Two models, one set of files: neither can have them. Say so for both.
+                $unusable[$class] = "entity '$entity' is also produced by {$known[$entity]}; rename one of the models";
+                $unusable[$known[$entity]] = "entity '$entity' is also produced by $class; rename one of the models";
+                continue;
+            }
+            $known[$entity] = $class;
+            if (Php::unusableSegment($entity) !== null) {
+                $unusable[$class] = "entity '$entity' is not a name PHP 7.4 allows in a namespace; rename the model";
+            }
         }
         foreach (array('only' => $o->only, 'readonly' => $o->readOnly) as $option => $names) {
             foreach ($names as $name) {
@@ -57,16 +87,30 @@ class TypeMaker
             if ($only && !\in_array($entity, $only, true)) {
                 continue;
             }
+            if (isset($unusable[$class])) {
+                continue;
+            }
             $info = $builder->build($model, \in_array($entity, $readOnly, true));
             if ($info !== null) {
                 $infos[] = $info;
             }
         }
 
-        $files = new FileWriter($o->dryRun);
-        foreach ($infos as $info) {
-            $this->writeEntity($files, $info);
+        $roots = array($o->outputDir);
+        if ($o->testsDir !== null) {
+            $roots[] = $o->testsDir;
         }
+        if ($o->schemaPath !== null) {
+            $roots[] = \dirname($o->schemaPath);
+        }
+        $files = new FileWriter($o->dryRun, $roots);
+        foreach ($infos as $i => $info) {
+            if (!$this->writeEntity($files, $info)) {
+                // Keep the schema from gaining entries for Types that were not written.
+                unset($infos[$i]);
+            }
+        }
+        $infos = \array_values($infos);
         if ($o->testsDir !== null && $infos) {
             $schemaClass = \trim($o->schemaNamespace, '\\') . '\\' . $this->schemaClassName();
             $files->writeOnce(
@@ -81,36 +125,69 @@ class TypeMaker
         foreach ($this->orphans(\array_keys($known)) as $path) {
             $this->report[] = "orphaned $path (no model produces it; not deleted)";
         }
-        foreach ($locator->skipped + $builder->skipped as $what => $why) {
+        foreach ($infos as $info) {
+            foreach ($this->staleInputs($info) as $path) {
+                $this->report[] = "orphaned $path ('{$info->entity}' is read-only now; not deleted)";
+            }
+        }
+        foreach ($locator->skipped + $builder->skipped + $unusable + $this->unparseable as $what => $why) {
             $this->report[] = "skipped  $what: $why";
         }
         $this->report = \array_merge($this->report, $schemaLines);
         return 0;
     }
 
+    /**
+     * @return bool false when nothing was written because the entity's code would not parse
+     */
     private function writeEntity(FileWriter $files, TypeInfo $info)
     {
         $o = $this->options;
         $dir = $this->join($o->outputDir, $info->entity);
-        $files->writeGenerated(
-            "$dir/Base/{$info->entity}TypeBase.php",
-            (new TypeBaseWriter())->render($info, $o->typeNamespace)
-        );
-        $files->writeOnce("$dir/{$info->entity}Type.php", (new TypeWriter())->render($info, $o->typeNamespace), $o->force);
+        $generated = array("$dir/Base/{$info->entity}TypeBase.php" => (new TypeBaseWriter())->render($info, $o->typeNamespace));
+        $once = array("$dir/{$info->entity}Type.php" => (new TypeWriter())->render($info, $o->typeNamespace));
         if (!$info->readOnly) {
-            $files->writeGenerated(
-                "$dir/Base/{$info->entity}InputBase.php",
-                (new InputBaseWriter())->render($info, $o->typeNamespace)
-            );
-            $files->writeOnce("$dir/{$info->entity}Input.php", (new InputWriter())->render($info, $o->typeNamespace), $o->force);
+            $generated["$dir/Base/{$info->entity}InputBase.php"] = (new InputBaseWriter())->render($info, $o->typeNamespace);
+            $once["$dir/{$info->entity}Input.php"] = (new InputWriter())->render($info, $o->typeNamespace);
         }
         if ($o->testsDir !== null) {
-            $files->writeOnce(
-                $this->join($o->testsDir, "{$info->entity}TypeTest.php"),
-                (new TestWriter())->render($info, $o->typeNamespace, $o->testNamespace),
-                $o->force
-            );
+            $once[$this->join($o->testsDir, "{$info->entity}TypeTest.php")]
+                = (new TestWriter())->render($info, $o->typeNamespace, $o->testNamespace);
         }
+
+        // Never write PHP that does not parse. A property or class name the templates
+        // cannot carry is the likeliest cause, and it spoils every file of the entity.
+        foreach ($generated + $once as $path => $code) {
+            $problem = Php::parseError($code);
+            if ($problem !== null) {
+                $this->unparseable[$info->modelClass] = "the code generated for '{$info->entity}' would not parse ($problem); nothing written for it";
+                return false;
+            }
+        }
+        foreach ($generated as $path => $code) {
+            $files->writeGenerated($path, $code);
+        }
+        foreach ($once as $path => $code) {
+            $files->writeOnce($path, $code, $o->force);
+        }
+        return true;
+    }
+
+    /**
+     * Input files left behind by an entity that has since become read-only.
+     *
+     * @return string[]
+     */
+    private function staleInputs(TypeInfo $info)
+    {
+        if (!$info->readOnly) {
+            return array();
+        }
+        $dir = $this->join($this->options->outputDir, $info->entity);
+        return \array_values(\array_filter(
+            array("$dir/Base/{$info->entity}InputBase.php", "$dir/{$info->entity}Input.php"),
+            'file_exists'
+        ));
     }
 
     /**

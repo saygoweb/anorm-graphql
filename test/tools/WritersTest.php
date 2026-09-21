@@ -78,6 +78,21 @@ class WritersTest extends TestCase
         $this->assertValidPhp($code, 'read-only test');
     }
 
+    public function testAnEntityWithOnlyBooleansStillGetsSomethingToUpdate(): void
+    {
+        $model = new \Anorm\GraphQL\Test\Fixtures\AwkwardModel\FlagModel(new NullPdo());
+        $code = (new TestWriter())->render((new TypeInfoBuilder())->build($model), 'App\GraphQL\Type', 'Tests\GraphQL');
+        // Created as true, updated to false: an empty sampleUpdate() would skip the update step unnoticed.
+        $this->assertMatchesRegularExpression("/function sampleUpdate\(\): array\s+\{\s+return \[\s+'active' => false,\s+\];/", $code);
+        $this->assertValidPhp($code, 'Boolean-only test');
+    }
+
+    public function testAnUpdateFieldThatIsNotABooleanIsPreferred(): void
+    {
+        $code = (new TestWriter())->render($this->info(), 'App\GraphQL\Type', 'Tests\GraphQL');
+        $this->assertMatchesRegularExpression("/function sampleUpdate\(\): array\s+\{\s+return \[\s+'name' => 'name 2',\s+\];/", $code);
+    }
+
     public function testTestCase(): void
     {
         $this->assertGolden('TestCase', (new TestCaseWriter())->render('Tests\GraphQL', 'App\GraphQL\ApiSchema'));

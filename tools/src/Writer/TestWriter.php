@@ -19,6 +19,7 @@ class TestWriter
         $expected = '';
         $sample = '';
         $update = '';
+        $updateIsBoolean = false;
         $foreignKeys = array();
         foreach ($info->fields as $name => $type) {
             $printed = $name === $info->keyProperty ? $type . '!' : $type;
@@ -31,8 +32,10 @@ class TestWriter
                 continue;
             }
             $sample .= "            '$name' => " . Php::export($this->sampleValue($name, $type, 1)) . ",\n";
-            if ($update === '' && $type !== 'Boolean') {
+            // Prefer a field whose second value is visibly different; a Boolean will do if that is all there is.
+            if ($update === '' || ($updateIsBoolean && $type !== 'Boolean')) {
                 $update = "            '$name' => " . Php::export($this->sampleValue($name, $type, 2)) . ",\n";
+                $updateIsBoolean = $type === 'Boolean';
             }
         }
         $foreignKeyNote = '';

@@ -14,6 +14,57 @@ class Php
         'String' => 'Type::string()',
     );
 
+    /**
+     * Words PHP 7.4 does not allow as a namespace segment or a class name. PHP 8 relaxed
+     * this for namespaces, but generated code has to run on the floor this package supports.
+     */
+    const RESERVED = array(
+        'abstract', 'and', 'array', 'as', 'break', 'callable', 'case', 'catch', 'class', 'clone', 'const',
+        'continue', 'declare', 'default', 'die', 'do', 'echo', 'else', 'elseif', 'empty', 'enddeclare',
+        'endfor', 'endforeach', 'endif', 'endswitch', 'endwhile', 'eval', 'exit', 'extends', 'final',
+        'finally', 'fn', 'for', 'foreach', 'function', 'global', 'goto', 'if', 'implements', 'include',
+        'include_once', 'instanceof', 'insteadof', 'interface', 'isset', 'list', 'match', 'namespace',
+        'new', 'or', 'print', 'private', 'protected', 'public', 'readonly', 'require', 'require_once',
+        'return', 'static', 'switch', 'throw', 'trait', 'try', 'unset', 'use', 'var', 'while', 'xor',
+        'yield', 'int', 'float', 'bool', 'string', 'true', 'false', 'null', 'void', 'iterable', 'object',
+        'mixed', 'never', 'self', 'parent',
+    );
+
+    /**
+     * @param string $namespace A namespace, or a single segment
+     * @return string|null The first segment that cannot be used, or null when all can
+     */
+    public static function unusableSegment($namespace)
+    {
+        foreach (\explode('\\', \trim($namespace, '\\')) as $segment) {
+            if (!\preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $segment) || \in_array(\strtolower($segment), self::RESERVED, true)) {
+                return $segment;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Whether a file's content says the generator wrote it: the header has to be the first
+     * thing after the opening tag. A file that merely mentions the header is somebody's own.
+     */
+    public static function isGenerated($content)
+    {
+        return \preg_match('/\A<\?php\s+' . \preg_quote(self::HEADER, '/') . '/', $content) === 1;
+    }
+
+    /** @return string|null Why $code does not parse under the running PHP, or null when it does */
+    public static function parseError($code)
+    {
+        try {
+            $parsed = \token_get_all($code, TOKEN_PARSE);
+            unset($parsed);
+            return null;
+        } catch (\ParseError $e) {
+            return $e->getMessage();
+        }
+    }
+
     /** @return string e.g. 'App\GraphQL\Type\Client' */
     public static function entityNamespace($typeNamespace, $entity)
     {

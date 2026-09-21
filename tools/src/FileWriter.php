@@ -3,7 +3,13 @@ namespace Anorm\GraphQL\Tools;
 
 use Anorm\GraphQL\Tools\Writer\Php;
 
-/** Writes files under the generator's two rules, and keeps the report. */
+/**
+ * Writes files under the generator's rules, and keeps the report.
+ *
+ * It writes only inside the directories it was given, and never through a symbolic
+ * link: a link under the output directory must not become a way to overwrite a file
+ * somewhere else.
+ */
 class FileWriter
 {
     /** @var string[] One line per file, e.g. 'written  src/...' */
@@ -12,21 +18,35 @@ class FileWriter
     /** @var bool */
     private $dryRun;
 
-    public function __construct($dryRun = false)
+    /** @var string[] Canonical directories that writes must stay inside; empty for no restriction */
+    private $roots = array();
+
+    /**
+     * @param bool $dryRun
+     * @param string[] $roots Directories that writes must stay inside
+     */
+    public function __construct($dryRun = false, array $roots = array())
     {
         $this->dryRun = (bool) $dryRun;
+        foreach ($roots as $root) {
+            $this->roots[] = \rtrim($this->canonical($root), '/') . '/';
+        }
     }
 
     /**
      * A file the generator owns. Overwritten every run, but only if what is there
-     * already carries the generated header: a hand-written file is never clobbered.
+     * already begins with the generated header: a hand-written file is never clobbered,
+     * not even one that quotes the header somewhere.
      *
      * @return bool false when refused
      */
     public function writeGenerated($path, $content)
     {
-        if (\file_exists($path) && \strpos((string) \file_get_contents($path), Php::HEADER) === false) {
-            $this->report[] = "refused  $path (exists without the generated header; move it aside to regenerate)";
+        if ($this->refuse($path)) {
+            return false;
+        }
+        if (\file_exists($path) && !Php::isGenerated((string) \file_get_contents($path))) {
+            $this->report[] = "refused  $path (exists and does not begin with the generated header; move it aside to regenerate)";
             return false;
         }
         if (\file_exists($path) && \file_get_contents($path) === $content) {
@@ -42,6 +62,9 @@ class FileWriter
      */
     public function writeOnce($path, $content, $force = false)
     {
+        if ($this->refuse($path)) {
+            return;
+        }
         if (\file_exists($path) && !$force) {
             $this->report[] = "kept     $path";
             return;
@@ -52,7 +75,48 @@ class FileWriter
     /** Replace a file's content outright; for the schema, whose edit is computed elsewhere. */
     public function replace($path, $content, $verb)
     {
+        if ($this->refuse($path)) {
+            return;
+        }
         $this->put($path, $content, \str_pad($verb, 8));
+    }
+
+    /** @return bool true, having said why, when $path must not be written */
+    private function refuse($path)
+    {
+        if (\is_link($path)) {
+            $this->report[] = "refused  $path (is a symbolic link)";
+            return true;
+        }
+        if (!$this->roots) {
+            return false;
+        }
+        $canonical = $this->canonical($path);
+        foreach ($this->roots as $root) {
+            if (\strpos($canonical, $root) === 0) {
+                return false;
+            }
+        }
+        $this->report[] = "refused  $path (resolves to $canonical, outside the directories given)";
+        return true;
+    }
+
+    /**
+     * The real path of something that may not exist yet: the real path of its deepest
+     * existing ancestor, plus the rest.
+     */
+    private function canonical($path)
+    {
+        if ($path === '' || $path[0] !== '/') {
+            $path = \getcwd() . '/' . $path;
+        }
+        $rest = '';
+        while (!\file_exists($path) && \dirname($path) !== $path) {
+            $rest = '/' . \basename($path) . $rest;
+            $path = \dirname($path);
+        }
+        $real = \realpath($path);
+        return ($real === false ? $path : $real) . $rest;
     }
 
     private function put($path, $content, $verb)

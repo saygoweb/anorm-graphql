@@ -28,6 +28,9 @@ class App
     /** @var Arguments */
     public $options;
 
+    /** @var string[] Arguments that are neither the command nor an option this tool has */
+    public $unexpected = array();
+
     /**
      * @param string[] $argv Without the program name
      */
@@ -56,6 +59,9 @@ class App
         if (\count($positional) >= 1) {
             $this->command = \array_shift($positional);
         }
+        // The parser is lenient: a misspelt option lands here, and its default would be
+        // used without a word. Writing to the default folder by accident is not lenient.
+        $this->unexpected = $positional;
     }
 
     /** @return int The process exit code */
@@ -69,6 +75,11 @@ class App
         if ($this->options['version']) {
             echo ANORM_GRAPHQL_VERSION . PHP_EOL;
             return 0;
+        }
+        if ($this->unexpected) {
+            echo self::TITLE . PHP_EOL;
+            \printf("Error: Unexpected argument '%s', try '--help'\n", $this->unexpected[0]);
+            return 2;
         }
         if ($this->command !== 'make') {
             echo self::TITLE . PHP_EOL;
