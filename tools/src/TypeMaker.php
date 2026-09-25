@@ -199,11 +199,14 @@ class TypeMaker
     {
         $name = \ltrim((string) $class, '\\');
         $segment = '[A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*';
-        if (!\preg_match('/^' . $segment . '(\\\\' . $segment . ')*$/', $name)) {
+        if (!\preg_match('/^' . $segment . '(\\\\' . $segment . ')*\z/', $name)) {
             return 'is not a class name';
         }
         if (\strcasecmp($name, ModelType::class) === 0) {
             return null;
+        }
+        if (\interface_exists($name) || \trait_exists($name)) {
+            return 'is not a class';
         }
         if (!\class_exists($name)) {
             return 'cannot be loaded: it is not a class the autoloader can find';

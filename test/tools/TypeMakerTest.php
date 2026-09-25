@@ -312,7 +312,9 @@ class TypeMakerTest extends TestCase
             'not a class name' => ['Made\Not A Class', 'is not a class name'],
             'empty' => ['', 'is not a class name'],
             'trailing separator' => ['Made\Base\\', 'is not a class name'],
+            'trailing newline' => ["Made\\Base\n", 'is not a class name'],
             'not loadable' => ['Made\Missing\BaseType', 'cannot be loaded: it is not a class the autoloader can find'],
+            'an interface' => [\GraphQL\Error\ClientAware::class, 'is not a class'],
             'not a ModelType' => [\ArrayObject::class, 'does not extend Anorm\GraphQL\ModelType'],
             'final' => [FinalModelType::class, 'is final'],
         ];

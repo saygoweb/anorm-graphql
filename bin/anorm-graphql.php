@@ -53,7 +53,7 @@ class App
         $arguments->addOption(array('classsuffix', 'c'), array('default' => $defaults->classSuffix, 'description' => 'Model suffix to strip'));
         $arguments->addOption('type-base', array('default' => $defaults->typeBase, 'description' => 'Class every generated TypeBase extends'));
         $arguments->addOption('only', array('default' => '', 'description' => 'Comma-separated model names to include'));
-        $arguments->addOption('readonly', array('default' => '', 'description' => 'Comma-separated model names to emit without Input or mutations'));
+        $arguments->addOption('readonly', array('default' => '', 'description' => 'Comma-separated models to emit without Input or mutations'));
         $arguments->parse();
         $this->options = $arguments;
         $positional = $arguments->getInvalidArguments();

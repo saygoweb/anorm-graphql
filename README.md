@@ -202,8 +202,7 @@ Options
   --classsuffix, -c  Model suffix to strip [default: Model]
   --type-base        Class every generated TypeBase extends [default: Anorm\GraphQL\ModelType]
   --only             Comma-separated model names to include
-  --readonly         Comma-separated model names to emit without Input or mutati
-                    ons
+  --readonly         Comma-separated models to emit without Input or mutations
 ```
 
 `--type-base` names a class of your own for every generated `<Entity>TypeBase` to
