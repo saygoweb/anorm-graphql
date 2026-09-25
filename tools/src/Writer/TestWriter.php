@@ -11,7 +11,31 @@ class TestWriter
         $entityNamespace = Php::entityNamespace($typeNamespace, $info->entity);
         $uses = "use $entityNamespace\\{$info->entity}Type;\n";
         $inputClass = 'null';
-        if (!$info->readOnly) {
+        $createUpdate = '';
+        if (!$info->readOnly && $info->mutations === 'create-update') {
+            $uses = "use $entityNamespace\\{$info->entity}CreateInput;\n"
+                . "use $entityNamespace\\{$info->entity}Type;\n"
+                . "use $entityNamespace\\{$info->entity}UpdateInput;\n";
+            $inputClass = "{$info->entity}CreateInput::class";
+            $required = '';
+            foreach ($info->required as $name) {
+                $required .= "            " . Php::export($name) . ",\n";
+            }
+            $createUpdate = <<<PHP
+
+    protected function updateInputClass(): ?string
+    {
+        return {$info->entity}UpdateInput::class;
+    }
+
+    protected function requiredFields(): array
+    {
+        return [
+$required        ];
+    }
+
+PHP;
+        } elseif (!$info->readOnly) {
             $uses = "use $entityNamespace\\{$info->entity}Input;\n" . $uses;
             $inputClass = "{$info->entity}Input::class";
         }
@@ -43,6 +67,11 @@ class TestWriter
             $foreignKeyNote = "        // Foreign keys are left out: the generator cannot know a valid parent row.\n"
                 . "        // If any is required, create the parent here and add: " . \implode(', ', $foreignKeys) . "\n";
         }
+        $missing = \array_values(\array_intersect($info->required, $foreignKeys));
+        if ($missing) {
+            $foreignKeyNote .= "        // Required on create, so the lifecycle test fails until they are added: "
+                . \implode(', ', $missing) . "\n";
+        }
         $updateNote = '';
         if ($update === '') {
             $updateNote = "        // Nothing to update could be chosen: every field is the key or a foreign key.\n"
@@ -71,7 +100,7 @@ class {$info->entity}TypeTest extends TestCase
     {
         return $inputClass;
     }
-
+$createUpdate
     protected function entityName(): string
     {
         return '{$info->fieldPrefix()}';

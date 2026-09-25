@@ -2,6 +2,7 @@
 
 namespace Anorm\GraphQL\Test\Tools;
 
+use Anorm\GraphQL\Test\Fixtures\CalendarModel\EventModel;
 use Anorm\GraphQL\Test\Fixtures\Model\WidgetModel;
 use Anorm\GraphQL\Test\Fixtures\Type\ProjectModelType;
 use Anorm\GraphQL\Tools\NullPdo;
@@ -138,5 +139,69 @@ class WritersTest extends TestCase
         $this->assertStringContainsString($header, (new InputBaseWriter())->render($this->info(), 'A'));
         $this->assertStringNotContainsString($header, (new TypeWriter())->render($this->info(), 'A'));
         $this->assertStringNotContainsString($header, (new InputWriter())->render($this->info(), 'A'));
+    }
+
+    private function createUpdate(TypeInfo $info): TypeInfo
+    {
+        $info->mutations = 'create-update';
+        return $info;
+    }
+
+    public function testCreateInputBaseHasNoKey(): void
+    {
+        $code = (new InputBaseWriter())->render($this->createUpdate($this->info()), 'App\GraphQL\Type', 'Create');
+        $this->assertGolden('WidgetCreateInputBase', $code);
+        $this->assertStringNotContainsString("create('id'", $code);
+    }
+
+    public function testUpdateInputBaseRequiresTheKeyAndNothingElse(): void
+    {
+        $code = (new InputBaseWriter())->render($this->createUpdate($this->info()), 'App\GraphQL\Type', 'Update');
+        $this->assertGolden('WidgetUpdateInputBase', $code);
+        $this->assertStringContainsString("FieldBuilder::create('id', Type::nonNull(Type::id()))->build(),", $code);
+        $this->assertSame(1, substr_count($code, 'Type::nonNull('));
+    }
+
+    public function testCreateAndUpdateInputs(): void
+    {
+        $info = $this->createUpdate($this->info());
+        $this->assertGolden('WidgetCreateInput', (new InputWriter())->render($info, 'App\GraphQL\Type', 'Create'));
+        $this->assertGolden('WidgetUpdateInput', (new InputWriter())->render($info, 'App\GraphQL\Type', 'Update'));
+    }
+
+    public function testARequiredPropertyIsNonNullOnCreateOnly(): void
+    {
+        $info = $this->createUpdate((new TypeInfoBuilder())->build(new EventModel(new NullPdo())));
+        $create = (new InputBaseWriter())->render($info, 'App\GraphQL\Type', 'Create');
+        $this->assertGolden('EventCreateInputBase', $create);
+        $this->assertStringContainsString("FieldBuilder::create('title', Type::nonNull(Type::string()))->build(),", $create);
+        $update = (new InputBaseWriter())->render($info, 'App\GraphQL\Type', 'Update');
+        $this->assertStringContainsString("FieldBuilder::create('title', Type::string())->build(),", $update);
+    }
+
+    public function testTheDefaultKindIsTheUpsertInput(): void
+    {
+        $info = $this->info();
+        $this->assertSame(
+            (new InputBaseWriter())->render($info, 'App\GraphQL\Type'),
+            (new InputBaseWriter())->render($info, 'App\GraphQL\Type', '')
+        );
+    }
+
+    public function testTypeUnderCreateUpdate(): void
+    {
+        $code = (new TypeWriter())->render($this->createUpdate($this->info()), 'App\GraphQL\Type');
+        $this->assertGolden('WidgetTypeCreateUpdate', $code);
+        $this->assertStringContainsString('resolveCreate / resolveUpdate', $code);
+    }
+
+    public function testTestUnderCreateUpdate(): void
+    {
+        $info = $this->createUpdate((new TypeInfoBuilder())->build(new EventModel(new NullPdo())));
+        $code = (new TestWriter())->render($info, 'App\GraphQL\Type', 'Tests\GraphQL');
+        $this->assertGolden('WidgetTypeTestCreateUpdate', $code);
+        $this->assertStringContainsString('return EventCreateInput::class;', $code);
+        $this->assertStringContainsString('return EventUpdateInput::class;', $code);
+        $this->assertMatchesRegularExpression("/function requiredFields\(\): array\s+\{\s+return \[\s+'title',\s+\];/", $code);
     }
 }

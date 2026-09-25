@@ -52,6 +52,7 @@ class App
         $arguments->addOption('schema-ns', array('default' => $defaults->schemaNamespace, 'description' => 'Namespace when scaffolding a new ApiSchema'));
         $arguments->addOption(array('classsuffix', 'c'), array('default' => $defaults->classSuffix, 'description' => 'Model suffix to strip'));
         $arguments->addOption('type-base', array('default' => $defaults->typeBase, 'description' => 'Class every generated TypeBase extends'));
+        $arguments->addOption('mutations', array('default' => $defaults->mutations, 'description' => 'upsert, or create-update for separate mutations'));
         $arguments->addOption('only', array('default' => '', 'description' => 'Comma-separated model names to include'));
         $arguments->addOption('readonly', array('default' => '', 'description' => 'Comma-separated models to emit without Input or mutations'));
         $arguments->parse();
@@ -112,6 +113,7 @@ class App
         $o->schemaNamespace = $this->options['schema-ns'];
         $o->classSuffix = $this->options['classsuffix'];
         $o->typeBase = (string) $this->options['type-base'];
+        $o->mutations = (string) $this->options['mutations'];
         $o->only = $this->names($this->options['only']);
         $o->readOnly = $this->names($this->options['readonly']);
         $o->force = (bool) $this->options['force'];

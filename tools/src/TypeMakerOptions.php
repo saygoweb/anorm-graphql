@@ -23,6 +23,8 @@ class TypeMakerOptions
     public $classSuffix = 'Model';
     /** @var string Class every generated <Entity>TypeBase extends; must extend Anorm\GraphQL\ModelType */
     public $typeBase = 'Anorm\GraphQL\ModelType';
+    /** @var string 'upsert', or 'create-update' for <entity>Create and <entity>Update */
+    public $mutations = 'upsert';
     /** @var string[] Entity or model class short names; empty for all */
     public $only = array();
     /** @var string[] Entity or model class short names */

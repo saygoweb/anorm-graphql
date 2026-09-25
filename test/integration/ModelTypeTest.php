@@ -62,6 +62,24 @@ class ModelTypeTest extends TestCase
         return array_column($this->type->resolveList(null, ['query' => $query], $this->context), 'name');
     }
 
+    /**
+     * @param array<int, array<string, mixed>> $inputs
+     * @return array<int, array<string, mixed>>
+     */
+    private function create(array $inputs): array
+    {
+        return $this->type->resolveCreate(null, ['input' => $inputs], $this->context);
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $inputs
+     * @return array<int, array<string, mixed>>
+     */
+    private function update(array $inputs): array
+    {
+        return $this->type->resolveUpdate(null, ['input' => $inputs], $this->context);
+    }
+
     public function testListOfAnEmptyTableIsEmpty(): void
     {
         $this->assertSame([], $this->type->resolveList(null, [], $this->context));
@@ -456,5 +474,78 @@ class ModelTypeTest extends TestCase
             $this->assertSame('refused create', $e->getMessage());
         }
         $this->assertSame(0, $this->rowCount());
+    }
+
+    public function testCreateMakesRowsAndReturnsThem(): void
+    {
+        $rows = $this->create([['name' => 'a', 'quantity' => 1], ['name' => 'b']]);
+        $this->assertCount(2, $rows);
+        $this->assertNotEmpty($rows[0]['id']);
+        $this->assertSame(2, $this->rowCount());
+        $this->assertSame([['create', null], ['create', null]], $this->type->authorized);
+        $this->assertSame([['a', false], ['b', false]], $this->type->written);
+    }
+
+    public function testCreateWithAKeyIsAClientSafeErrorAndWritesNothing(): void
+    {
+        $id = $this->create([['name' => 'a']])[0]['id'];
+        try {
+            $this->create([['name' => 'b'], ['id' => $id, 'name' => 'c']]);
+            $this->fail('expected a refusal');
+        } catch (UserError $e) {
+            $this->assertSame("WidgetType create does not take 'id'; to change a row, update it", $e->getMessage());
+        }
+        $this->assertSame(1, $this->rowCount(), 'all or nothing');
+    }
+
+    public function testAnEmptyOrNullKeyOnCreateIsNoKey(): void
+    {
+        $this->assertCount(2, $this->create([['id' => '', 'name' => 'a'], ['id' => null, 'name' => 'b']]));
+    }
+
+    public function testUpdateChangesOnlyWhatItNames(): void
+    {
+        $id = $this->create([['name' => 'a', 'quantity' => 7]])[0]['id'];
+        $rows = $this->update([['id' => $id, 'name' => 'a2']]);
+        $this->assertSame('a2', $rows[0]['name']);
+        $this->assertEquals(7, $rows[0]['quantity'], 'a field the update does not name is left as it was');
+        $this->assertSame(1, $this->rowCount());
+        $this->assertSame([['create', null], ['edit', (int) $id]], $this->type->authorized);
+        $this->assertSame([['a', false], ['a2', true]], $this->type->written);
+    }
+
+    public function testUpdateWithoutAKeyIsAClientSafeError(): void
+    {
+        $this->expectException(UserError::class);
+        $this->expectExceptionMessage("WidgetType update needs 'id'");
+        $this->update([['name' => 'x']]);
+    }
+
+    public function testUpdateOfAnUnknownKeyIsAClientSafeError(): void
+    {
+        $this->expectException(UserError::class);
+        $this->expectExceptionMessage("WidgetType id '999999' not found");
+        $this->update([['id' => '999999', 'name' => 'x']]);
+    }
+
+    public function testOneFailingRowRollsBackTheWholeUpdate(): void
+    {
+        $ids = array_column($this->create([['name' => 'a'], ['name' => 'b']]), 'id');
+        $this->type->failOnName = 'b2';
+        try {
+            $this->update([['id' => $ids[0], 'name' => 'a2'], ['id' => $ids[1], 'name' => 'b2']]);
+            $this->fail('expected a failure');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('beforeWrite failed on b2', $e->getMessage());
+        }
+        $this->assertSame(['a', 'b'], $this->names([]));
+    }
+
+    public function testCreateAndUpdateStayWithinTheScope(): void
+    {
+        $type = new ScopedDocumentType('InvoiceType', 10);
+        $this->expectException(UserError::class);
+        $this->expectExceptionMessage("'type' is fixed for InvoiceType");
+        $type->resolveCreate(null, ['input' => [['type' => 99, 'title' => 'x']]], $this->context);
     }
 }

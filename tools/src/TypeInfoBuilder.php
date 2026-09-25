@@ -68,6 +68,9 @@ class TypeInfoBuilder
                 continue;
             }
             $info->fields[$property] = $this->graphQLType($property, $key, $type);
+            if ($property !== $key && $this->isRequired($class, $property)) {
+                $info->required[] = $property;
+            }
         }
         // The key leads, whatever order the model declares its properties in.
         $info->fields = array($key => 'ID') + $info->fields;
@@ -93,6 +96,16 @@ class TypeInfoBuilder
             }
         }
         return false;
+    }
+
+    /**
+     * Whether a create must supply this property: its docblock carries `@required`.
+     * The model says so; the generator never asks the database.
+     */
+    private function isRequired($class, $property)
+    {
+        $doc = (new \ReflectionProperty($class, $property))->getDocComment();
+        return \is_string($doc) && \preg_match('/@required\b/', $doc) === 1;
     }
 
     /**

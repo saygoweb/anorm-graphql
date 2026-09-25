@@ -54,13 +54,13 @@ class SchemaEditor
         }
         $known = array();
         foreach ($knownEntities as $entity) {
-            foreach (array('List', 'Delete', 'Upsert') as $suffix) {
+            foreach (array('List', 'Create', 'Delete', 'Update', 'Upsert') as $suffix) {
                 $known[\lcfirst($entity) . $suffix] = true;
             }
         }
         foreach ($infos as $info) {
             // For an entity of this run, what it produces now is known exactly.
-            foreach (array('List', 'Delete', 'Upsert') as $suffix) {
+            foreach (array('List', 'Create', 'Delete', 'Update', 'Upsert') as $suffix) {
                 unset($known[$info->fieldPrefix() . $suffix]);
             }
         }
@@ -130,14 +130,17 @@ class SchemaEditor
     }
 
     /**
-     * @return array<string, array<string, string>> root key => kind ('List', 'Delete', 'Upsert') => field name
+     * @return array<string, array<string, string>> root key => kind ('List', 'Create', 'Delete', 'Update', 'Upsert') => field name
      */
     private function fieldNames(TypeInfo $info)
     {
         $prefix = $info->fieldPrefix();
         $names = array('query' => array('List' => $prefix . 'List'), 'mutation' => array());
         if (!$info->readOnly) {
-            $names['mutation'] = array('Delete' => $prefix . 'Delete', 'Upsert' => $prefix . 'Upsert');
+            $kinds = $info->mutations === 'create-update' ? array('Create', 'Delete', 'Update') : array('Delete', 'Upsert');
+            foreach ($kinds as $kind) {
+                $names['mutation'][$kind] = $prefix . $kind;
+            }
         }
         return $names;
     }
@@ -145,7 +148,7 @@ class SchemaEditor
     /**
      * The lines of one entry, without indentation and ending in its comma.
      *
-     * @param string $kind 'List', 'Delete' or 'Upsert'
+     * @param string $kind 'List', 'Create', 'Delete', 'Update' or 'Upsert'
      * @param callable $name Turns a fully qualified class name into the text to write for it
      * @return string[]
      */
@@ -163,7 +166,7 @@ class SchemaEditor
             $argument = "->addArgument('id', {$t}::nonNull({$t}::listOf({$t}::nonNull({$t}::id()))))";
         } else {
             $t = $name(self::TYPE);
-            $input = $name($base . 'Input');
+            $input = $name($base . ($kind === 'Upsert' ? '' : $kind) . 'Input');
             $argument = "->addArgument('input', {$t}::nonNull({$t}::listOf({$t}::nonNull(\$this->type({$input}::class)))))";
         }
         return array($first, '    ' . $argument, '    ->build(),');

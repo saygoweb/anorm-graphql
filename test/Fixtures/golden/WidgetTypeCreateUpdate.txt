@@ -1,0 +1,19 @@
+<?php
+
+namespace App\GraphQL\Type\Widget;
+
+use App\GraphQL\Type\Widget\Base\WidgetTypeBase;
+
+/**
+ * Yours to edit: anorm-graphql writes this file once and never again.
+ *
+ * Override points, all inherited from Anorm\GraphQL\ModelType:
+ *  - authorize($verb, $model, $context)   throw to refuse 'list', 'create', 'edit' or 'delete'
+ *  - beforeWrite($model, $input, $isUpdate, $context)   stamp columns before a write
+ *  - newModel($context)   construct the model some other way
+ *  - resolveList / resolveCreate / resolveUpdate / resolveDelete   replace a resolver outright
+ *  - fields()   add computed fields: array_merge(parent::fields(), [...])
+ */
+class WidgetType extends WidgetTypeBase
+{
+}

@@ -8,6 +8,9 @@ class TypeWriter
     public function render(TypeInfo $info, $typeNamespace)
     {
         $namespace = Php::entityNamespace($typeNamespace, $info->entity);
+        $resolvers = $info->mutations === 'create-update'
+            ? 'resolveList / resolveCreate / resolveUpdate / resolveDelete'
+            : 'resolveList / resolveUpsert / resolveDelete';
         return <<<PHP
 <?php
 
@@ -22,7 +25,7 @@ use $namespace\\Base\\{$info->entity}TypeBase;
  *  - authorize(\$verb, \$model, \$context)   throw to refuse 'list', 'create', 'edit' or 'delete'
  *  - beforeWrite(\$model, \$input, \$isUpdate, \$context)   stamp columns before a write
  *  - newModel(\$context)   construct the model some other way
- *  - resolveList / resolveUpsert / resolveDelete   replace a resolver outright
+ *  - $resolvers   replace a resolver outright
  *  - fields()   add computed fields: array_merge(parent::fields(), [...])
  */
 class {$info->entity}Type extends {$info->entity}TypeBase

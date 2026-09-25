@@ -2,6 +2,7 @@
 
 namespace Anorm\GraphQL\Test\Tools;
 
+use Anorm\GraphQL\Test\Fixtures\CalendarModel\EventModel;
 use Anorm\GraphQL\Test\Fixtures\Model\LedgerLineModel;
 use Anorm\GraphQL\Test\Fixtures\Model\WidgetModel;
 use Anorm\GraphQL\Test\Fixtures\OtherModel\GroupModel;
@@ -68,5 +69,13 @@ class TypeInfoBuilderTest extends TestCase
     public function testReadOnlyIsCarried(): void
     {
         $this->assertTrue((new TypeInfoBuilder())->build(new WidgetModel(new NullPdo()), true)->readOnly);
+    }
+
+    public function testARequiredPropertyIsNamedAndTheKeyNeverIs(): void
+    {
+        $info = (new TypeInfoBuilder())->build(new EventModel(new NullPdo()));
+        $this->assertSame(['title'], $info->required);
+        $this->assertSame('upsert', $info->mutations, 'the default');
+        $this->assertSame([], (new TypeInfoBuilder())->build(new WidgetModel(new NullPdo()))->required);
     }
 }

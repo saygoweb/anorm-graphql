@@ -5,15 +5,17 @@ use Anorm\GraphQL\Tools\TypeInfo;
 
 class InputWriter
 {
-    public function render(TypeInfo $info, $typeNamespace)
+    /** @param string $kind '' for the upsert Input, 'Create' or 'Update' */
+    public function render(TypeInfo $info, $typeNamespace, $kind = '')
     {
         $namespace = Php::entityNamespace($typeNamespace, $info->entity);
+        $name = $info->entity . $kind . 'Input';
         return <<<PHP
 <?php
 
 namespace $namespace;
 
-use $namespace\\Base\\{$info->entity}InputBase;
+use $namespace\\Base\\{$name}Base;
 
 /**
  * Yours to edit: anorm-graphql writes this file once and never again.
@@ -21,7 +23,7 @@ use $namespace\\Base\\{$info->entity}InputBase;
  * Override fields() to add or remove input fields:
  * array_merge(parent::fields(), [...])
  */
-class {$info->entity}Input extends {$info->entity}InputBase
+class {$name} extends {$name}Base
 {
 }
 

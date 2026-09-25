@@ -57,6 +57,7 @@ class TestEnvironment
         $pdo->exec('DROP TABLE IF EXISTS `owners`');
         $pdo->exec('DROP TABLE IF EXISTS `documents`');
         $pdo->exec('DROP TABLE IF EXISTS `legacy_widgets`');
+        $pdo->exec('DROP TABLE IF EXISTS `events`');
         $pdo->exec(
             'CREATE TABLE `owners` (
                 `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -85,6 +86,13 @@ class TestEnvironment
                 `price` DOUBLE NULL,
                 `active` TINYINT(1) NULL,
                 `owner_id` INT NULL,
+                `notes` VARCHAR(255) NULL
+            ) ENGINE=InnoDB"
+        );
+        $pdo->exec(
+            "CREATE TABLE `events` (
+                `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                `title` VARCHAR(255) NOT NULL,
                 `notes` VARCHAR(255) NULL
             ) ENGINE=InnoDB"
         );

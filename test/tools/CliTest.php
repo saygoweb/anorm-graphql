@@ -123,4 +123,40 @@ class CliTest extends TestCase
         $this->assertStringContainsString('--type-base', $output);
         $this->assertStringContainsString('[default: Anorm\GraphQL\ModelType]', $output);
     }
+
+    public function testCreateUpdateEndToEnd(): void
+    {
+        $arguments = $this->make();
+        $arguments[array_search('-t', $arguments, true) + 1] = 'CliCu\Type';
+        $arguments[] = '--mutations';
+        $arguments[] = 'create-update';
+        [$exit, $output] = $this->cli($arguments);
+        $this->assertSame(0, $exit, $output);
+
+        foreach (['Create', 'Update'] as $kind) {
+            require_once "$this->dir/Type/Widget/Base/Widget{$kind}InputBase.php";
+            require_once "$this->dir/Type/Widget/Widget{$kind}Input.php";
+        }
+        $create = new \CliCu\Type\Widget\WidgetCreateInput();
+        $update = new \CliCu\Type\Widget\WidgetUpdateInput();
+        $this->assertSame('WidgetCreateInput', $create->name);
+        $this->assertArrayNotHasKey('id', $create->getFields());
+        $this->assertSame('ID!', (string) $update->getField('id')->getType());
+    }
+
+    public function testABadMutationsValueExitsTwoAndWritesNothing(): void
+    {
+        [$exit, $output] = $this->cli(array_merge($this->make(), ['--mutations', 'create']));
+        $this->assertSame(2, $exit, $output);
+        $this->assertStringContainsString("Error: --mutations 'create' must be 'upsert' or 'create-update'", $output);
+        $this->assertSame(['.', '..'], scandir($this->dir), 'nothing may be written');
+    }
+
+    public function testHelpNamesTheMutationsOption(): void
+    {
+        [$exit, $output] = $this->cli(['--help']);
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('--mutations', $output);
+        $this->assertStringContainsString('[default: upsert]', $output);
+    }
 }

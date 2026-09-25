@@ -55,6 +55,10 @@ class TypeMaker
             $this->report[] = "Error: --type-base '{$o->typeBase}' $problem";
             return 2;
         }
+        if (!\in_array($o->mutations, array('upsert', 'create-update'), true)) {
+            $this->report[] = "Error: --mutations '{$o->mutations}' must be 'upsert' or 'create-update'";
+            return 2;
+        }
 
         $locator = new ModelLocator(new NullPdo());
         $models = $locator->locate($o->modelsDir, $o->modelNamespace);
@@ -98,6 +102,7 @@ class TypeMaker
             }
             $info = $builder->build($model, \in_array($entity, $readOnly, true));
             if ($info !== null) {
+                $info->mutations = $o->mutations;
                 $infos[] = $info;
             }
         }
@@ -140,8 +145,9 @@ class TypeMaker
             $this->report[] = "orphaned $path (no model produces it; not deleted)";
         }
         foreach ($infos as $info) {
+            $why = $info->readOnly ? 'is read-only now' : "uses {$info->mutations} mutations now";
             foreach ($this->staleInputs($info) as $path) {
-                $this->report[] = "orphaned $path ('{$info->entity}' is read-only now; not deleted)";
+                $this->report[] = "orphaned $path ('{$info->entity}' $why; not deleted)";
             }
         }
         foreach ($locator->skipped + $builder->skipped + $unusable + $this->unparseable as $what => $why) {
@@ -161,8 +167,10 @@ class TypeMaker
         $generated = array("$dir/Base/{$info->entity}TypeBase.php" => (new TypeBaseWriter())->render($info, $o->typeNamespace, $o->typeBase));
         $once = array("$dir/{$info->entity}Type.php" => (new TypeWriter())->render($info, $o->typeNamespace));
         if (!$info->readOnly) {
-            $generated["$dir/Base/{$info->entity}InputBase.php"] = (new InputBaseWriter())->render($info, $o->typeNamespace);
-            $once["$dir/{$info->entity}Input.php"] = (new InputWriter())->render($info, $o->typeNamespace);
+            foreach ($this->inputKinds($info) as $kind) {
+                $generated["$dir/Base/{$info->entity}{$kind}InputBase.php"] = (new InputBaseWriter())->render($info, $o->typeNamespace, $kind);
+                $once["$dir/{$info->entity}{$kind}Input.php"] = (new InputWriter())->render($info, $o->typeNamespace, $kind);
+            }
         }
         if ($o->testsDir !== null) {
             $once[$this->join($o->testsDir, "{$info->entity}TypeTest.php")]
@@ -185,6 +193,12 @@ class TypeMaker
             $files->writeOnce($path, $code, $o->force);
         }
         return true;
+    }
+
+    /** @return string[] '' for the upsert Input, or 'Create' and 'Update' */
+    private function inputKinds(TypeInfo $info)
+    {
+        return $info->mutations === 'create-update' ? array('Create', 'Update') : array('');
     }
 
     /**
@@ -221,20 +235,27 @@ class TypeMaker
     }
 
     /**
-     * Input files left behind by an entity that has since become read-only.
+     * Input files on disk that this run does not produce for the entity: it became
+     * read-only, or changed between upsert and create-update.
      *
      * @return string[]
      */
     private function staleInputs(TypeInfo $info)
     {
-        if (!$info->readOnly) {
-            return array();
-        }
         $dir = $this->join($this->options->outputDir, $info->entity);
-        return \array_values(\array_filter(
-            array("$dir/Base/{$info->entity}InputBase.php", "$dir/{$info->entity}Input.php"),
-            'file_exists'
-        ));
+        $made = $info->readOnly ? array() : $this->inputKinds($info);
+        $stale = array();
+        foreach (array('', 'Create', 'Update') as $kind) {
+            if (\in_array($kind, $made, true)) {
+                continue;
+            }
+            foreach (array("$dir/Base/{$info->entity}{$kind}InputBase.php", "$dir/{$info->entity}{$kind}Input.php") as $path) {
+                if (\file_exists($path)) {
+                    $stale[] = $path;
+                }
+            }
+        }
+        return $stale;
     }
 
     /**

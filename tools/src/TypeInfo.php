@@ -14,6 +14,10 @@ class TypeInfo
     public $fields = array();
     /** @var bool true to emit no Input and no mutations */
     public $readOnly = false;
+    /** @var string 'upsert', or 'create-update' for separate create and update mutations */
+    public $mutations = 'upsert';
+    /** @var string[] Non-key properties a create must supply: their docblock says `@required` */
+    public $required = array();
 
     /** @return string The prefix of this entity's schema fields, e.g. 'client' */
     public function fieldPrefix()

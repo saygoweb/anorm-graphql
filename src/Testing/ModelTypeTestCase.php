@@ -39,6 +39,22 @@ abstract class ModelTypeTestCase extends TestCase
     /** @return string|null Class name of its Input, or null when read-only */
     abstract protected function inputClass(): ?string;
 
+    /**
+     * @return string|null Class name of the update Input when the Type has separate
+     *   create and update mutations (`--mutations create-update`); inputClass() is then
+     *   the create Input. null for upsert.
+     */
+    protected function updateInputClass(): ?string
+    {
+        return null;
+    }
+
+    /** @return string[] Fields a create must supply: non-null on the create Input */
+    protected function requiredFields(): array
+    {
+        return [];
+    }
+
     /** @return string The schema field prefix, e.g. 'client' for clientList */
     abstract protected function entityName(): string;
 
@@ -105,6 +121,11 @@ abstract class ModelTypeTestCase extends TestCase
             $this->addToAssertionCount(1);
             return;
         }
+        if ($this->updateInputClass() !== null) {
+            $this->assertInputFields((string) $this->inputClass(), true);
+            $this->assertInputFields((string) $this->updateInputClass(), false);
+            return;
+        }
         $input = $this->container->get($this->inputClass());
         $actual = [];
         foreach ($input->getFields() as $name => $field) {
@@ -114,6 +135,31 @@ abstract class ModelTypeTestCase extends TestCase
             $this->assertArrayHasKey($name, $actual, "{$input->name} should have a field '$name'");
             // Nothing is required on an input: a missing key means create.
             $this->assertSame(rtrim($expected, '!'), $actual[$name], "{$input->name}.$name");
+        }
+    }
+
+    /** A create Input: no key, required fields non-null. An update Input: the key non-null, nothing else. */
+    private function assertInputFields(string $class, bool $isCreate): void
+    {
+        $input = $this->container->get($class);
+        $actual = [];
+        foreach ($input->getFields() as $name => $field) {
+            $actual[$name] = (string) $field->getType();
+        }
+        $key = $this->keyField();
+        foreach ($this->expectedFieldTypes() as $name => $expected) {
+            $bare = rtrim($expected, '!');
+            if ($name === $key) {
+                if ($isCreate) {
+                    $this->assertArrayNotHasKey($name, $actual, "{$input->name} should not take the key: a create makes it");
+                } else {
+                    $this->assertSame($bare . '!', $actual[$name] ?? null, "{$input->name}.$name: an update names its row");
+                }
+                continue;
+            }
+            $this->assertArrayHasKey($name, $actual, "{$input->name} should have a field '$name'");
+            $required = $isCreate && in_array($name, $this->requiredFields(), true);
+            $this->assertSame($required ? $bare . '!' : $bare, $actual[$name], "{$input->name}.$name");
         }
     }
 
@@ -138,7 +184,10 @@ abstract class ModelTypeTestCase extends TestCase
         $prefix = $this->entityName();
         $before = count($this->listAll());
 
-        $created = $this->upsert([$this->sampleInput(), $this->sampleInput()]);
+        $separate = $this->updateInputClass() !== null;
+        $created = $separate
+            ? $this->create([$this->sampleInput(), $this->sampleInput()])
+            : $this->upsert([$this->sampleInput(), $this->sampleInput()]);
         $this->assertCount(2, $created, 'upsert should return both created rows');
         $this->assertNotNull($created[0][$key], 'a created row should come back with its key');
         $this->assertNotSame('', $created[0][$key], 'a created row should come back with its key');
@@ -153,11 +202,19 @@ abstract class ModelTypeTestCase extends TestCase
         $this->assertEquals($id, $one[0][$key]);
 
         if ($this->sampleUpdate()) {
-            $updated = $this->upsert([[$key => $id] + $this->sampleUpdate()]);
+            $change = [$key => $id] + $this->sampleUpdate();
+            $updated = $separate ? $this->update([$change]) : $this->upsert([$change]);
             $this->assertCount(1, $updated);
             $this->assertEquals($id, $updated[0][$key], 'an upsert with a key updates in place');
             foreach ($this->sampleUpdate() as $name => $value) {
                 $this->assertEquals($value, $updated[0][$name], "updated $name");
+            }
+            if ($separate) {
+                foreach ($this->sampleInput() as $name => $value) {
+                    if (!array_key_exists($name, $this->sampleUpdate())) {
+                        $this->assertEquals($value, $updated[0][$name], "$name is not in the update, so it stays as it was");
+                    }
+                }
             }
             $this->assertCount($before + 2, $this->listAll(), 'an update should not add a row');
         }
@@ -305,5 +362,38 @@ abstract class ModelTypeTestCase extends TestCase
             "mutation (\$input: [{$inputType}!]!) { {$prefix}Upsert(input: \$input) { {$this->selection()} } }",
             ['input' => $inputs]
         )["{$prefix}Upsert"];
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $inputs
+     * @return array<int, array<string, mixed>>
+     */
+    protected function create(array $inputs): array
+    {
+        return $this->mutate('Create', (string) $this->inputClass(), $inputs);
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $inputs Each with the key
+     * @return array<int, array<string, mixed>>
+     */
+    protected function update(array $inputs): array
+    {
+        return $this->mutate('Update', (string) $this->updateInputClass(), $inputs);
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $inputs
+     * @return array<int, array<string, mixed>>
+     */
+    private function mutate(string $kind, string $inputClass, array $inputs): array
+    {
+        $field = $this->entityName() . $kind;
+        // The Input's own GraphQL name, rather than a guess from the prefix.
+        $inputType = $this->container->get($inputClass)->name;
+        return $this->execute(
+            "mutation (\$input: [{$inputType}!]!) { {$field}(input: \$input) { {$this->selection()} } }",
+            ['input' => $inputs]
+        )[$field];
     }
 }

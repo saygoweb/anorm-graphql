@@ -368,4 +368,85 @@ class TypeMakerTest extends TestCase
             $this->assertMatchesRegularExpression('/^(current|kept|skipped)/', $line);
         }
     }
+
+    private function createUpdate(): TypeMakerOptions
+    {
+        $o = $this->options();
+        $o->mutations = 'create-update';
+        return $o;
+    }
+
+    public function testCreateUpdateWritesTwoInputsAndTheirMutations(): void
+    {
+        $this->make($this->createUpdate());
+        foreach (
+            [
+                'src/Type/Widget/Base/WidgetCreateInputBase.php',
+                'src/Type/Widget/Base/WidgetUpdateInputBase.php',
+                'src/Type/Widget/WidgetCreateInput.php',
+                'src/Type/Widget/WidgetUpdateInput.php',
+            ] as $file
+        ) {
+            $this->assertFileExists("$this->dir/$file");
+        }
+        $this->assertFileDoesNotExist("$this->dir/src/Type/Widget/WidgetInput.php");
+        $schema = file_get_contents("$this->dir/src/ApiSchema.php");
+        $expected = [
+            "'widgetCreate'", "'widgetUpdate'", "'widgetDelete'",
+            "'resolveCreate'", "'resolveUpdate'",
+            'WidgetCreateInput::class', 'WidgetUpdateInput::class',
+        ];
+        foreach ($expected as $text) {
+            $this->assertStringContainsString($text, $schema);
+        }
+        $this->assertStringNotContainsString("'widgetUpsert'", $schema);
+        $this->assertStringNotContainsString("'ownerUpsert'", $schema);
+    }
+
+    public function testCreateUpdateLeavesReadOnlyEntitiesAlone(): void
+    {
+        $o = $this->createUpdate();
+        $o->readOnly = ['Owner'];
+        $this->make($o);
+        $this->assertFileDoesNotExist("$this->dir/src/Type/Owner/OwnerCreateInput.php");
+        $this->assertStringNotContainsString("'ownerCreate'", file_get_contents("$this->dir/src/ApiSchema.php"));
+    }
+
+    public function testSwitchingToCreateUpdateReportsTheOldInputAndEntryAndDeletesNothing(): void
+    {
+        $this->make($this->options());
+        $report = implode("\n", $this->make($this->createUpdate())->report);
+        foreach (["$this->dir/src/Type/Widget/WidgetInput.php", "$this->dir/src/Type/Widget/Base/WidgetInputBase.php"] as $path) {
+            $this->assertStringContainsString("orphaned $path ('Widget' uses create-update mutations now; not deleted)", $report);
+            $this->assertFileExists($path);
+        }
+        $this->assertStringContainsString("orphaned: 'widgetUpsert' is marked as generated but no model produces it", $report);
+        $this->assertStringContainsString("'widgetUpsert'", file_get_contents("$this->dir/src/ApiSchema.php"));
+    }
+
+    public function testAnUnknownMutationsValueIsAnErrorAndWritesNothing(): void
+    {
+        $o = $this->options();
+        $o->mutations = 'upsert,create';
+        $maker = new TypeMaker($o);
+        $this->assertSame(2, $maker->run());
+        $this->assertSame(["Error: --mutations 'upsert,create' must be 'upsert' or 'create-update'"], $maker->report);
+        $this->assertDirectoryDoesNotExist("$this->dir/src");
+    }
+
+    public function testASecondCreateUpdateRunChangesNothing(): void
+    {
+        $this->make($this->createUpdate());
+        foreach ($this->make($this->createUpdate())->report as $line) {
+            $this->assertMatchesRegularExpression('/^(current|kept|skipped)/', $line);
+        }
+    }
+
+    public function testWithoutMutationsTheOutputIsUnchanged(): void
+    {
+        $this->make($this->options());
+        $this->assertFileExists("$this->dir/src/Type/Widget/WidgetInput.php");
+        $this->assertFileDoesNotExist("$this->dir/src/Type/Widget/WidgetCreateInput.php");
+        $this->assertStringContainsString("'widgetUpsert'", file_get_contents("$this->dir/src/ApiSchema.php"));
+    }
 }

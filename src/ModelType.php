@@ -13,7 +13,7 @@ use GraphQL\Error\UserError;
 use GraphQL\Type\Definition\ObjectType;
 
 /**
- * The resolver logic every model-backed Type shares: list, upsert and delete.
+ * The resolver logic every model-backed Type shares: list, upsert (or create and update) and delete.
  *
  * A generated base class supplies modelClass() and fields(). A project's own
  * subclass overrides authorize() and beforeWrite(), or a whole resolver.
@@ -104,6 +104,28 @@ abstract class ModelType extends ObjectType
 
     public function resolveUpsert($root, $args, Container $context): array
     {
+        return $this->write($args['input'], $context, 'upsert');
+    }
+
+    /** Create rows. An input may not carry the key: a create makes it. */
+    public function resolveCreate($root, $args, Container $context): array
+    {
+        return $this->write($args['input'], $context, 'create');
+    }
+
+    /** Update rows by key. Only the fields an input names are changed. */
+    public function resolveUpdate($root, $args, Container $context): array
+    {
+        return $this->write($args['input'], $context, 'update');
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $inputs
+     * @param string $mode 'upsert', 'create' or 'update'
+     * @return array<int, array<string, mixed>>
+     */
+    private function write(array $inputs, Container $context, string $mode): array
+    {
         $probe = $this->newModel($context);
         $this->assertStaticMode($probe);
         $key = $probe->mapper()->modelPrimaryKey;
@@ -112,23 +134,30 @@ abstract class ModelType extends ObjectType
         // and scope properties are fixed.
         $notFromInput = array_merge([$key], array_keys($scope));
 
-        return $this->transactional($probe->getPdo(), function () use ($args, $context, $key, $scope, $notFromInput) {
+        return $this->transactional($probe->getPdo(), function () use ($inputs, $context, $key, $scope, $notFromInput, $mode) {
             $rows = [];
-            foreach ($args['input'] as $input) {
+            foreach ($inputs as $input) {
                 $this->assertInputWithinScope($input, $scope);
-                $isUpdate = isset($input[$key]) && $input[$key] !== '';
-                if ($isUpdate) {
+                $hasKey = isset($input[$key]) && $input[$key] !== '';
+                if ($mode === 'create' && $hasKey) {
+                    throw new UserError($this->name . " create does not take '$key'; to change a row, update it");
+                }
+                if ($mode === 'update' && !$hasKey) {
+                    throw new UserError($this->name . " update needs '$key'");
+                }
+                if ($hasKey) {
                     $model = $this->findOrFail($context, $input[$key]);
                     $this->authorize(self::VERB_EDIT, $model, $context);
                 } else {
                     $model = $this->newModel($context);
                     $this->authorize(self::VERB_CREATE, null, $context);
                 }
+                // Only the keys present in the input are set: an update changes what it names.
                 Mapper::toModel($model, $input, $notFromInput);
                 foreach ($scope as $property => $value) {
                     $model->$property = $value;
                 }
-                $this->beforeWrite($model, $input, $isUpdate, $context);
+                $this->beforeWrite($model, $input, $hasKey, $context);
                 $model->write();
                 $rows[] = Mapper::toArray($model);
             }
