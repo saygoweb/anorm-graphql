@@ -1,6 +1,7 @@
 <?php
 namespace Anorm\GraphQL\Tools;
 
+use Anorm\GraphQL\ModelType;
 use Anorm\GraphQL\Tools\Schema\SchemaEditor;
 use Anorm\GraphQL\Tools\Schema\SchemaScaffolder;
 use Anorm\GraphQL\Tools\Writer\InputBaseWriter;
@@ -48,6 +49,11 @@ class TypeMaker
                 $this->report[] = "Error: $option '$namespace' cannot be used: '$bad' is not a name PHP 7.4 allows in a namespace";
                 return 2;
             }
+        }
+        $problem = $this->typeBaseProblem($o->typeBase);
+        if ($problem !== null) {
+            $this->report[] = "Error: --type-base '{$o->typeBase}' $problem";
+            return 2;
         }
 
         $locator = new ModelLocator(new NullPdo());
@@ -152,7 +158,7 @@ class TypeMaker
     {
         $o = $this->options;
         $dir = $this->join($o->outputDir, $info->entity);
-        $generated = array("$dir/Base/{$info->entity}TypeBase.php" => (new TypeBaseWriter())->render($info, $o->typeNamespace));
+        $generated = array("$dir/Base/{$info->entity}TypeBase.php" => (new TypeBaseWriter())->render($info, $o->typeNamespace, $o->typeBase));
         $once = array("$dir/{$info->entity}Type.php" => (new TypeWriter())->render($info, $o->typeNamespace));
         if (!$info->readOnly) {
             $generated["$dir/Base/{$info->entity}InputBase.php"] = (new InputBaseWriter())->render($info, $o->typeNamespace);
@@ -179,6 +185,36 @@ class TypeMaker
             $files->writeOnce($path, $code, $o->force);
         }
         return true;
+    }
+
+    /**
+     * Why the class named by --type-base cannot be what every TypeBase extends, or null.
+     * Checked before anything is loaded or written: a base that is missing would give
+     * generated files that fatal on first use, which is worse than no files.
+     *
+     * @param string $class
+     * @return string|null
+     */
+    private function typeBaseProblem($class)
+    {
+        $name = \ltrim((string) $class, '\\');
+        $segment = '[A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*';
+        if (!\preg_match('/^' . $segment . '(\\\\' . $segment . ')*$/', $name)) {
+            return 'is not a class name';
+        }
+        if (\strcasecmp($name, ModelType::class) === 0) {
+            return null;
+        }
+        if (!\class_exists($name)) {
+            return 'cannot be loaded: it is not a class the autoloader can find';
+        }
+        if (!\is_subclass_of($name, ModelType::class)) {
+            return 'does not extend Anorm\GraphQL\ModelType';
+        }
+        if ((new \ReflectionClass($name))->isFinal()) {
+            return 'is final';
+        }
+        return null;
     }
 
     /**

@@ -21,6 +21,8 @@ class TypeMakerOptions
     public $schemaNamespace = 'App\GraphQL';
     /** @var string */
     public $classSuffix = 'Model';
+    /** @var string Class every generated <Entity>TypeBase extends; must extend Anorm\GraphQL\ModelType */
+    public $typeBase = 'Anorm\GraphQL\ModelType';
     /** @var string[] Entity or model class short names; empty for all */
     public $only = array();
     /** @var string[] Entity or model class short names */

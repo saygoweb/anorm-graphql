@@ -3,6 +3,7 @@
 namespace Anorm\GraphQL\Test\Tools;
 
 use Anorm\GraphQL\Test\Fixtures\Model\WidgetModel;
+use Anorm\GraphQL\Test\Fixtures\Type\ProjectModelType;
 use Anorm\GraphQL\Tools\NullPdo;
 use Anorm\GraphQL\Tools\TypeInfo;
 use Anorm\GraphQL\Tools\TypeInfoBuilder;
@@ -48,6 +49,28 @@ class WritersTest extends TestCase
     public function testTypeBase(): void
     {
         $this->assertGolden('WidgetTypeBase', (new TypeBaseWriter())->render($this->info(), 'App\GraphQL\Type'));
+    }
+
+    public function testTypeBaseOnAProjectBaseClass(): void
+    {
+        $this->assertGolden(
+            'WidgetTypeBaseProjectBase',
+            (new TypeBaseWriter())->render($this->info(), 'App\GraphQL\Type', ProjectModelType::class)
+        );
+    }
+
+    public function testTheDefaultBaseNamedExplicitlyGivesTheDefaultOutput(): void
+    {
+        $default = (new TypeBaseWriter())->render($this->info(), 'App\GraphQL\Type');
+        $this->assertSame($default, (new TypeBaseWriter())->render($this->info(), 'App\GraphQL\Type', 'Anorm\GraphQL\ModelType'));
+        $this->assertSame($default, (new TypeBaseWriter())->render($this->info(), 'App\GraphQL\Type', '\Anorm\GraphQL\ModelType'));
+    }
+
+    public function testALeadingBackslashOnAProjectBaseIsNotDoubled(): void
+    {
+        $code = (new TypeBaseWriter())->render($this->info(), 'App\GraphQL\Type', '\\' . ProjectModelType::class);
+        $this->assertStringContainsString('extends \Anorm\GraphQL\Test\Fixtures\Type\ProjectModelType' . "\n", $code);
+        $this->assertStringNotContainsString('\\\\Anorm', $code);
     }
 
     public function testInputBase(): void

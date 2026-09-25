@@ -2,6 +2,7 @@
 
 namespace Anorm\GraphQL\Test\Tools;
 
+use Anorm\GraphQL\Test\Fixtures\Type\ProjectModelType;
 use Anorm\GraphQL\Test\TempDir;
 use PHPUnit\Framework\TestCase;
 
@@ -87,5 +88,39 @@ class CliTest extends TestCase
         foreach (['--models', '--type-ns', '--schema', '--readonly', '--dry-run', '--force'] as $option) {
             $this->assertStringContainsString($option, $output);
         }
+    }
+
+    public function testTypeBaseEndToEnd(): void
+    {
+        $arguments = $this->make();
+        $arguments[array_search('-t', $arguments, true) + 1] = 'CliBase\Type';
+        $arguments[] = '--type-base';
+        $arguments[] = ProjectModelType::class;
+        [$exit, $output] = $this->cli($arguments);
+        $this->assertSame(0, $exit, $output);
+
+        // The generated classes load against the real base and are built on it.
+        require_once "$this->dir/Type/Widget/Base/WidgetTypeBase.php";
+        require_once "$this->dir/Type/Widget/WidgetType.php";
+        $type = new \CliBase\Type\Widget\WidgetType();
+        $this->assertInstanceOf(ProjectModelType::class, $type);
+        $this->assertSame('project', $type->projectBase());
+        $this->assertSame('WidgetType', $type->name);
+    }
+
+    public function testABadTypeBaseExitsTwoAndWritesNothing(): void
+    {
+        [$exit, $output] = $this->cli(array_merge($this->make(), ['--type-base', 'Nope\Missing']));
+        $this->assertSame(2, $exit, $output);
+        $this->assertStringContainsString("Error: --type-base 'Nope\Missing' cannot be loaded", $output);
+        $this->assertSame(['.', '..'], scandir($this->dir), 'nothing may be written');
+    }
+
+    public function testHelpNamesTheTypeBaseOption(): void
+    {
+        [$exit, $output] = $this->cli(['--help']);
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('--type-base', $output);
+        $this->assertStringContainsString('[default: Anorm\GraphQL\ModelType]', $output);
     }
 }

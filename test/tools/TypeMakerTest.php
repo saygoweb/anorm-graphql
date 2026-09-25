@@ -2,6 +2,8 @@
 
 namespace Anorm\GraphQL\Test\Tools;
 
+use Anorm\GraphQL\Test\Fixtures\Type\FinalModelType;
+use Anorm\GraphQL\Test\Fixtures\Type\ProjectModelType;
 use Anorm\GraphQL\Tools\TypeMaker;
 use Anorm\GraphQL\Tools\TypeMakerOptions;
 use Anorm\GraphQL\Test\TempDir;
@@ -263,6 +265,56 @@ class TypeMakerTest extends TestCase
             'types' => ['--type-ns', 'typeNamespace'],
             'tests' => ['--test-ns', 'testNamespace'],
             'schema' => ['--schema-ns', 'schemaNamespace'],
+        ];
+    }
+
+    public function testEveryGeneratedTypeBaseExtendsTheTypeBase(): void
+    {
+        $o = $this->options();
+        $o->typeBase = ProjectModelType::class;
+        $this->make($o);
+        foreach (['Widget', 'Owner'] as $entity) {
+            $base = file_get_contents("$this->dir/src/Type/$entity/Base/{$entity}TypeBase.php");
+            $this->assertStringContainsString(
+                "abstract class {$entity}TypeBase extends \\" . ProjectModelType::class . "\n",
+                $base
+            );
+            $this->assertStringNotContainsString('use Anorm\GraphQL\ModelType;', $base);
+        }
+    }
+
+    public function testWithoutATypeBaseTheOutputIsUnchanged(): void
+    {
+        $this->make($this->options());
+        $base = file_get_contents("$this->dir/src/Type/Widget/Base/WidgetTypeBase.php");
+        $this->assertStringContainsString("use Anorm\GraphQL\ModelType;\n", $base);
+        $this->assertStringContainsString("abstract class WidgetTypeBase extends ModelType\n", $base);
+    }
+
+    /**
+     * @dataProvider unusableTypeBases
+     */
+    public function testATypeBaseThatCannotBeUsedIsAnErrorAndWritesNothing(string $class, string $why): void
+    {
+        $o = $this->options();
+        $o->typeBase = $class;
+        $maker = new TypeMaker($o);
+        $this->assertSame(2, $maker->run());
+        $this->assertSame(["Error: --type-base '$class' $why"], $maker->report);
+        $this->assertDirectoryDoesNotExist("$this->dir/src");
+        $this->assertDirectoryDoesNotExist("$this->dir/tests");
+    }
+
+    /** @return array<string, array<int, string>> */
+    public function unusableTypeBases(): array
+    {
+        return [
+            'not a class name' => ['Made\Not A Class', 'is not a class name'],
+            'empty' => ['', 'is not a class name'],
+            'trailing separator' => ['Made\Base\\', 'is not a class name'],
+            'not loadable' => ['Made\Missing\BaseType', 'cannot be loaded: it is not a class the autoloader can find'],
+            'not a ModelType' => [\ArrayObject::class, 'does not extend Anorm\GraphQL\ModelType'],
+            'final' => [FinalModelType::class, 'is final'],
         ];
     }
 
