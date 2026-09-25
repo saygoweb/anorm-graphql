@@ -17,7 +17,11 @@ class ApiSchema extends Schema
                 'fields' => [
 
                     // anorm-graphql
-                    GraphQLUtils::createListField('clientList', $this->type(\App\GraphQL\Type\Client\ClientType::class), 'resolveList')
+                    GraphQLUtils::createListField(
+                        'clientList',
+                        $this->type(\App\GraphQL\Type\Client\ClientType::class),
+                        'resolveList'
+                    )
                         ->addArgument('query', $this->type(MangoInput::class))
                         ->build(),
                     // anorm-graphql
@@ -29,7 +33,11 @@ class ApiSchema extends Schema
                 'name' => 'Mutation',
                 'fields' => [
                     // anorm-graphql
-                    GraphQLUtils::createListField('clientDelete', $this->type(\App\GraphQL\Type\Client\ClientType::class), 'resolveDelete')
+                    GraphQLUtils::createListField(
+                        'clientDelete',
+                        $this->type(\App\GraphQL\Type\Client\ClientType::class),
+                        'resolveDelete'
+                    )
                         ->addArgument('id', Type::nonNull(Type::listOf(Type::nonNull(Type::id()))))
                         ->build(),
                     // The marker was removed from this one, so it is the project's now.

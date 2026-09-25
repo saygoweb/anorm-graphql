@@ -335,7 +335,8 @@ class SchemaEditorShapesTest extends SchemaProbe
         $result = $this->edit($source, [$this->info('Client')]);
         $this->assertSoundEdit($source, $result, [$this->info('Client')]);
         $this->assertStringNotContainsString('use Anorm\GraphQL\GraphQLUtils;', $result->source, 'that would repoint the hand-written calls');
-        $this->assertStringContainsString("\\Anorm\\GraphQL\\GraphQLUtils::createListField('clientList'", $result->source);
+        // Fully qualified, even this short entity name's line is 125 columns, so it wraps.
+        $this->assertStringContainsString("\\Anorm\\GraphQL\\GraphQLUtils::createListField(\n                        'clientList',", $result->source);
         $this->assertStringContainsString("GraphQLUtils::createField('aaa'", $result->source);
     }
 

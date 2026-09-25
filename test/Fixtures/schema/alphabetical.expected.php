@@ -53,7 +53,10 @@ class ApiSchema extends Schema
                         ->build(),
                     // anorm-graphql
                     GraphQLUtils::createListField('bananaUpsert', $this->type(BananaType::class), 'resolveUpsert')
-                        ->addArgument('input', Type::nonNull(Type::listOf(Type::nonNull($this->type(BananaInput::class)))))
+                        ->addArgument(
+                            'input',
+                            Type::nonNull(Type::listOf(Type::nonNull($this->type(BananaInput::class))))
+                        )
                         ->build(),
                     // anorm-graphql
                     GraphQLUtils::createListField('clientDelete', $this->type(ClientType::class), 'resolveDelete')
@@ -61,7 +64,10 @@ class ApiSchema extends Schema
                         ->build(),
                     // anorm-graphql
                     GraphQLUtils::createListField('clientUpsert', $this->type(ClientType::class), 'resolveUpsert')
-                        ->addArgument('input', Type::nonNull(Type::listOf(Type::nonNull($this->type(ClientInput::class)))))
+                        ->addArgument(
+                            'input',
+                            Type::nonNull(Type::listOf(Type::nonNull($this->type(ClientInput::class))))
+                        )
                         ->build(),
                 ],
             ]),

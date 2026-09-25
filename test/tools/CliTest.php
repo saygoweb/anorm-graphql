@@ -82,7 +82,7 @@ class CliTest extends TestCase
 
     public function testVersionAndHelp(): void
     {
-        $this->assertSame([0, '0.2.0'], $this->cli(['--version']));
+        $this->assertSame([0, '0.2.1'], $this->cli(['--version']));
         [$exit, $output] = $this->cli(['--help']);
         $this->assertSame(0, $exit);
         foreach (['--models', '--type-ns', '--schema', '--readonly', '--dry-run', '--force', '--mutations', '--input-only'] as $option) {

@@ -15,6 +15,9 @@ class SchemaEditor
     const GRAPHQL_UTILS = 'Anorm\GraphQL\GraphQLUtils';
     const MANGO_INPUT = 'Anorm\GraphQL\Type\MangoInput';
     const TYPE = 'GraphQL\Type\Definition\Type';
+    /** PSR-12's line length limit; a call is broken onto several lines once it, at its
+     *  actual indentation, would exceed this many columns. */
+    const LINE_LIMIT = 120;
 
     /** @var string Namespace of the generated Types, no trailing backslash */
     private $typeNamespace;
@@ -151,28 +154,71 @@ class SchemaEditor
     /**
      * The lines of one entry, without indentation and ending in its comma.
      *
+     * Each returned line already carries whatever extra spaces set it off from the
+     * entry's own indentation (a continuation line under createListField(...), or the
+     * argument of a wrapped ->addArgument(...) one level deeper still); the caller adds
+     * the entry's indentation uniformly, the same way for every line.
+     *
      * @param string $kind 'List', 'Create', 'Delete', 'Update' or 'Upsert'
      * @param callable $name Turns a fully qualified class name into the text to write for it
+     * @param string $indent The indentation the entry will actually be written with; used
+     *                        only to decide whether a line needs to be wrapped
      * @return string[]
      */
-    public function entryLines($kind, TypeInfo $info, callable $name)
+    public function entryLines($kind, TypeInfo $info, callable $name, $indent = '')
     {
         $field = $info->fieldPrefix() . $kind;
         $base = $this->typeNamespace . '\\' . $info->entity . '\\' . $info->entity;
         $utils = $name(self::GRAPHQL_UTILS);
         $type = $name($base . 'Type');
-        $first = "{$utils}::createListField('$field', \$this->type({$type}::class), 'resolve$kind')";
+
+        $first = $this->callLines(
+            $indent,
+            '',
+            "{$utils}::createListField",
+            array("'$field'", "\$this->type({$type}::class)", "'resolve$kind'")
+        );
+
         if ($kind === 'List') {
-            $argument = "->addArgument('query', \$this->type(" . $name(self::MANGO_INPUT) . '::class))';
+            $args = array("'query'", '$this->type(' . $name(self::MANGO_INPUT) . '::class)');
         } elseif ($kind === 'Delete') {
             $t = $name(self::TYPE);
-            $argument = "->addArgument('id', {$t}::nonNull({$t}::listOf({$t}::nonNull({$t}::id()))))";
+            $args = array("'id'", "{$t}::nonNull({$t}::listOf({$t}::nonNull({$t}::id())))");
         } else {
             $t = $name(self::TYPE);
             $input = $name($base . ($kind === 'Upsert' ? '' : $kind) . 'Input');
-            $argument = "->addArgument('input', {$t}::nonNull({$t}::listOf({$t}::nonNull(\$this->type({$input}::class)))))";
+            $args = array("'input'", "{$t}::nonNull({$t}::listOf({$t}::nonNull(\$this->type({$input}::class))))");
         }
-        return array($first, '    ' . $argument, '    ->build(),');
+        $argument = $this->callLines($indent, '    ', '->addArgument', $args);
+
+        return \array_merge($first, $argument, array('    ->build(),'));
+    }
+
+    /**
+     * One call's lines: `$prefix$call(a, b, c)` on one line when that, at $indent, fits
+     * within LINE_LIMIT columns; otherwise PSR-12 style, one argument per line, the
+     * closing paren back at $prefix's own level.
+     *
+     * @param string $indent The indentation this call will actually be written with
+     * @param string $prefix Extra spaces this call's own line starts with, on top of
+     *                        $indent (e.g. '    ' for a continuation line, '' for the
+     *                        entry's first line); also where its wrapped form's lines sit
+     * @param string[] $args Each argument's exact source text
+     * @return string[]
+     */
+    private function callLines($indent, $prefix, $call, array $args)
+    {
+        $joined = $prefix . $call . '(' . \implode(', ', $args) . ')';
+        if (\strlen($indent . $joined) <= self::LINE_LIMIT) {
+            return array($joined);
+        }
+        $lines = array($prefix . $call . '(');
+        $last = \count($args) - 1;
+        foreach ($args as $i => $arg) {
+            $lines[] = $prefix . '    ' . $arg . ($i < $last ? ',' : '');
+        }
+        $lines[] = $prefix . ')';
+        return $lines;
     }
 
     /**
@@ -205,7 +251,7 @@ class SchemaEditor
                 $messages[] = "duplicate: '$name' is marked as generated more than once; the later entry was left alone";
                 $rewrite = false;
             } elseif ($rewrite) {
-                $lines = $this->entryLines($desired[$name][0], $desired[$name][1], $resolve);
+                $lines = $this->entryLines($desired[$name][0], $desired[$name][1], $resolve, $entry->indent);
                 // What followed the comma, a trailing comment perhaps, stays.
                 $text = $entry->beforeMarker . $this->render($entry->indent, $lines, $eol, $entry->afterComma);
                 $written[$name] = true;
@@ -243,7 +289,7 @@ class SchemaEditor
             } elseif ($indents) {
                 $indent = $indents[\count($indents) - 1];
             }
-            $lines = $this->entryLines($spec[0], $spec[1], $resolve);
+            $lines = $this->entryLines($spec[0], $spec[1], $resolve, $indent);
             \array_splice($texts, $at, 0, array($this->render($indent, $lines, $eol, $eol)));
             \array_splice($needsComma, $at, 0, array(null));
             \array_splice($sortNames, $at, 0, array($name));

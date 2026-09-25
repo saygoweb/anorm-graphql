@@ -33,11 +33,17 @@ class ApiSchema extends Schema
 						->build(),
 					// anorm-graphql
 					\Anorm\GraphQL\GraphQLUtils::createListField('mangoDelete', $this->type(MangoType::class), 'resolveDelete')
-					    ->addArgument('id', \GraphQL\Type\Definition\Type::nonNull(\GraphQL\Type\Definition\Type::listOf(\GraphQL\Type\Definition\Type::nonNull(\GraphQL\Type\Definition\Type::id()))))
+					    ->addArgument(
+					        'id',
+					        \GraphQL\Type\Definition\Type::nonNull(\GraphQL\Type\Definition\Type::listOf(\GraphQL\Type\Definition\Type::nonNull(\GraphQL\Type\Definition\Type::id())))
+					    )
 					    ->build(),
 					// anorm-graphql
 					\Anorm\GraphQL\GraphQLUtils::createListField('mangoUpsert', $this->type(MangoType::class), 'resolveUpsert')
-					    ->addArgument('input', \GraphQL\Type\Definition\Type::nonNull(\GraphQL\Type\Definition\Type::listOf(\GraphQL\Type\Definition\Type::nonNull($this->type(\App\GraphQL\Type\Mango\MangoInput::class)))))
+					    ->addArgument(
+					        'input',
+					        \GraphQL\Type\Definition\Type::nonNull(\GraphQL\Type\Definition\Type::listOf(\GraphQL\Type\Definition\Type::nonNull($this->type(\App\GraphQL\Type\Mango\MangoInput::class))))
+					    )
 					    ->build(),
 				],
 			]),

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.1
+
+Fix only, for the first consumer's second release. Default output is unchanged for
+every entry that already fit on one line.
+
+- `SchemaEditor::entryLines()` now wraps a `GraphQLUtils::createListField(...)` or
+  `->addArgument(...)` call PSR-12 style (one argument per line, closing paren on its
+  own) whenever it, at the indentation it will actually be written with, would exceed
+  120 columns — the schema's own line length limit, which a generated entry could
+  previously exceed with no way to satisfy it short of hand-editing generated code.
+  Affects entities/fields long enough to push a line past 120 columns (e.g.
+  `CreditStatus`, `PaymentTerms`), fully qualified names written where a short name
+  cannot be imported, and the "paste these entries by hand" fallback, which uses the
+  same wrapping.
+
 ## 0.2.0
 
 For the first consumer's second release (`saygoweb/frontaccounting-module-graphql`,

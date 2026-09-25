@@ -2,7 +2,7 @@
 <?php
 namespace Anorm\GraphQL\Tools;
 
-define('ANORM_GRAPHQL_VERSION', '0.2.0');
+define('ANORM_GRAPHQL_VERSION', '0.2.1');
 
 // Installed as a dependency, relative to vendor/saygoweb/anorm-graphql/bin
 if (\file_exists(__DIR__ . '/../../../autoload.php')) {
