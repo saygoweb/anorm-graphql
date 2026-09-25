@@ -23,6 +23,7 @@ abstract class EventCreateInputBase extends InputObjectType
         return [
             FieldBuilder::create('title', Type::nonNull(Type::string()))->build(),
             FieldBuilder::create('notes', Type::string())->build(),
+            FieldBuilder::create('dueOn', \Anorm\GraphQL\Type\DateType::instance())->build(),
         ];
     }
 }

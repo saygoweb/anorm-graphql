@@ -67,7 +67,7 @@ class TypeInfoBuilder
             if ($type === 'array' || $this->isModel($type, $class)) {
                 continue;
             }
-            $info->fields[$property] = $this->graphQLType($property, $key, $type);
+            $info->fields[$property] = $this->graphQLType($property, $key, $type, $class);
             if ($property !== $key && $this->isRequired($class, $property)) {
                 $info->required[] = $property;
             }
@@ -111,7 +111,7 @@ class TypeInfoBuilder
     /**
      * In precedence order: the key, then an `Id` suffix, then the declared type.
      */
-    private function graphQLType($property, $key, $declared)
+    private function graphQLType($property, $key, $declared, $modelClass)
     {
         if ($property === $key || \substr($property, -2) === 'Id') {
             return 'ID';
@@ -124,7 +124,28 @@ class TypeInfoBuilder
             case 'bool':
                 return 'Boolean';
             default:
-                return 'String';
+                return $this->isDate($declared, $modelClass) ? 'Date' : 'String';
         }
+    }
+
+    /**
+     * Whether a declared type is a date: \DateTimeInterface or a class implementing it.
+     * A docblock usually gives the name as written, so the model's own namespace is tried too.
+     *
+     * @param string|null $type
+     * @param string $modelClass
+     */
+    private function isDate($type, $modelClass)
+    {
+        if ($type === null || \in_array($type, array('string', 'array'), true)) {
+            return false;
+        }
+        $namespace = \substr($modelClass, 0, (int) \strrpos($modelClass, '\\'));
+        foreach (array(\ltrim($type, '\\'), $namespace . '\\' . $type) as $candidate) {
+            if ((\class_exists($candidate) || \interface_exists($candidate)) && \is_a($candidate, \DateTimeInterface::class, true)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

@@ -204,4 +204,21 @@ class WritersTest extends TestCase
         $this->assertStringContainsString('return EventUpdateInput::class;', $code);
         $this->assertMatchesRegularExpression("/function requiredFields\(\): array\s+\{\s+return \[\s+'title',\s+\];/", $code);
     }
+
+    public function testADateFieldUsesTheSharedDateType(): void
+    {
+        $info = (new TypeInfoBuilder())->build(new EventModel(new NullPdo()));
+        $code = (new TypeBaseWriter())->render($info, 'App\GraphQL\Type');
+        $this->assertGolden('EventTypeBase', $code);
+        $this->assertStringContainsString("FieldBuilder::create('dueOn', \\Anorm\\GraphQL\\Type\\DateType::instance())->build(),", $code);
+        $this->assertStringNotContainsString('use Anorm\GraphQL\Type\DateType;', $code);
+    }
+
+    public function testADateGetsADateSample(): void
+    {
+        $info = (new TypeInfoBuilder())->build(new EventModel(new NullPdo()));
+        $code = (new TestWriter())->render($info, 'App\GraphQL\Type', 'Tests\GraphQL');
+        $this->assertStringContainsString("'dueOn' => 'Date',", $code);
+        $this->assertStringContainsString("'dueOn' => '2026-01-01',", $code);
+    }
 }

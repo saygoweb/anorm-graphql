@@ -82,10 +82,10 @@ class CliTest extends TestCase
 
     public function testVersionAndHelp(): void
     {
-        $this->assertSame([0, '0.1.0'], $this->cli(['--version']));
+        $this->assertSame([0, '0.2.0'], $this->cli(['--version']));
         [$exit, $output] = $this->cli(['--help']);
         $this->assertSame(0, $exit);
-        foreach (['--models', '--type-ns', '--schema', '--readonly', '--dry-run', '--force'] as $option) {
+        foreach (['--models', '--type-ns', '--schema', '--readonly', '--dry-run', '--force', '--mutations', '--input-only'] as $option) {
             $this->assertStringContainsString($option, $output);
         }
     }
@@ -158,5 +158,13 @@ class CliTest extends TestCase
         $this->assertSame(0, $exit);
         $this->assertStringContainsString('--mutations', $output);
         $this->assertStringContainsString('[default: upsert]', $output);
+    }
+
+    public function testInputOnlyThroughTheCommandLine(): void
+    {
+        [$exit, $output] = $this->cli(array_merge($this->make(), ['--input-only', 'Owner']));
+        $this->assertSame(0, $exit, $output);
+        $this->assertFileExists("$this->dir/Type/Owner/OwnerInput.php");
+        $this->assertFileDoesNotExist("$this->dir/Type/Owner/OwnerType.php");
     }
 }

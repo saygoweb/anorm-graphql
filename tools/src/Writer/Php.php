@@ -12,6 +12,7 @@ class Php
         'Float' => 'Type::float()',
         'Boolean' => 'Type::boolean()',
         'String' => 'Type::string()',
+        'Date' => '\\Anorm\\GraphQL\\Type\\DateType::instance()',
     );
 
     /**

@@ -80,7 +80,7 @@ class TypeMaker
                 $unusable[$class] = "entity '$entity' is not a name PHP 7.4 allows in a namespace; rename the model";
             }
         }
-        foreach (array('only' => $o->only, 'readonly' => $o->readOnly) as $option => $names) {
+        foreach (array('only' => $o->only, 'readonly' => $o->readOnly, 'input-only' => $o->inputOnly) as $option => $names) {
             foreach ($names as $name) {
                 if (!isset($known[$this->entityOf($name)])) {
                     $this->report[] = "Error: --$option names '$name', which is not a model in {$o->modelsDir}";
@@ -90,6 +90,7 @@ class TypeMaker
         }
         $only = \array_map(array($this, 'entityOf'), $o->only);
         $readOnly = \array_map(array($this, 'entityOf'), $o->readOnly);
+        $inputOnly = \array_map(array($this, 'entityOf'), $o->inputOnly);
 
         $infos = array();
         foreach ($models as $class => $model) {
@@ -103,6 +104,7 @@ class TypeMaker
             $info = $builder->build($model, \in_array($entity, $readOnly, true));
             if ($info !== null) {
                 $info->mutations = $o->mutations;
+                $info->inputOnly = \in_array($info->entity, $inputOnly, true);
                 $infos[] = $info;
             }
         }
@@ -164,15 +166,21 @@ class TypeMaker
     {
         $o = $this->options;
         $dir = $this->join($o->outputDir, $info->entity);
-        $generated = array("$dir/Base/{$info->entity}TypeBase.php" => (new TypeBaseWriter())->render($info, $o->typeNamespace, $o->typeBase));
-        $once = array("$dir/{$info->entity}Type.php" => (new TypeWriter())->render($info, $o->typeNamespace));
-        if (!$info->readOnly) {
+        $withType = !$info->inputOnly || $info->readOnly;
+        $withInputs = !$info->readOnly || $info->inputOnly;
+        $generated = array();
+        $once = array();
+        if ($withType) {
+            $generated["$dir/Base/{$info->entity}TypeBase.php"] = (new TypeBaseWriter())->render($info, $o->typeNamespace, $o->typeBase);
+            $once["$dir/{$info->entity}Type.php"] = (new TypeWriter())->render($info, $o->typeNamespace);
+        }
+        if ($withInputs) {
             foreach ($this->inputKinds($info) as $kind) {
                 $generated["$dir/Base/{$info->entity}{$kind}InputBase.php"] = (new InputBaseWriter())->render($info, $o->typeNamespace, $kind);
                 $once["$dir/{$info->entity}{$kind}Input.php"] = (new InputWriter())->render($info, $o->typeNamespace, $kind);
             }
         }
-        if ($o->testsDir !== null) {
+        if ($withType && $o->testsDir !== null) {
             $once[$this->join($o->testsDir, "{$info->entity}TypeTest.php")]
                 = (new TestWriter())->render($info, $o->typeNamespace, $o->testNamespace);
         }
@@ -243,7 +251,7 @@ class TypeMaker
     private function staleInputs(TypeInfo $info)
     {
         $dir = $this->join($this->options->outputDir, $info->entity);
-        $made = $info->readOnly ? array() : $this->inputKinds($info);
+        $made = ($info->readOnly && !$info->inputOnly) ? array() : $this->inputKinds($info);
         $stale = array();
         foreach (array('', 'Create', 'Update') as $kind) {
             if (\in_array($kind, $made, true)) {

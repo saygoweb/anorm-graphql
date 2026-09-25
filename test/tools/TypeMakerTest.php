@@ -449,4 +449,45 @@ class TypeMakerTest extends TestCase
         $this->assertFileDoesNotExist("$this->dir/src/Type/Widget/WidgetCreateInput.php");
         $this->assertStringContainsString("'widgetUpsert'", file_get_contents("$this->dir/src/ApiSchema.php"));
     }
+
+    public function testInputOnlyWritesTheInputAndNothingElse(): void
+    {
+        $o = $this->options();
+        $o->inputOnly = ['Owner'];
+        $this->make($o);
+        $this->assertFileExists("$this->dir/src/Type/Owner/OwnerInput.php");
+        $this->assertFileExists("$this->dir/src/Type/Owner/Base/OwnerInputBase.php");
+        $this->assertFileDoesNotExist("$this->dir/src/Type/Owner/OwnerType.php");
+        $this->assertFileDoesNotExist("$this->dir/tests/OwnerTypeTest.php");
+        $schema = file_get_contents("$this->dir/src/ApiSchema.php");
+        $this->assertStringNotContainsString("'owner", $schema, 'no entry of any kind');
+        $this->assertStringContainsString("'widgetUpsert'", $schema);
+    }
+
+    public function testInputOnlyAndReadOnlyGiveATypeAListAndInputs(): void
+    {
+        $o = $this->options();
+        $o->mutations = 'create-update';
+        $o->readOnly = ['Owner'];
+        $o->inputOnly = ['Owner'];
+        $report = implode("\n", $this->make($o)->report);
+        $this->assertFileExists("$this->dir/src/Type/Owner/OwnerType.php");
+        $this->assertFileExists("$this->dir/src/Type/Owner/OwnerCreateInput.php");
+        $this->assertFileExists("$this->dir/src/Type/Owner/OwnerUpdateInput.php");
+        $schema = file_get_contents("$this->dir/src/ApiSchema.php");
+        $this->assertStringContainsString("'ownerList'", $schema);
+        $this->assertStringNotContainsString("'ownerCreate'", $schema);
+        $this->assertStringNotContainsString("'ownerUpdate'", $schema);
+        $this->assertStringNotContainsString('orphaned', $report, 'its inputs are produced, so not stale');
+    }
+
+    public function testAnUnknownInputOnlyNameIsAnErrorAndWritesNothing(): void
+    {
+        $o = $this->options();
+        $o->inputOnly = ['Nope'];
+        $maker = new TypeMaker($o);
+        $this->assertSame(2, $maker->run());
+        $this->assertStringContainsString("--input-only names 'Nope'", $maker->report[0]);
+        $this->assertDirectoryDoesNotExist("$this->dir/src");
+    }
 }

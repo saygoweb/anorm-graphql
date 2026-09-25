@@ -93,7 +93,8 @@ class TestEnvironment
             "CREATE TABLE `events` (
                 `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
                 `title` VARCHAR(255) NOT NULL,
-                `notes` VARCHAR(255) NULL
+                `notes` VARCHAR(255) NULL,
+                `due_on` DATE NULL
             ) ENGINE=InnoDB"
         );
     }

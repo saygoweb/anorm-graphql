@@ -143,6 +143,8 @@ PHP;
                 return $n + 0.5;
             case 'Boolean':
                 return $n === 1;
+            case 'Date':
+                return \sprintf('2026-01-%02d', $n);
             default:
                 return $name . ' ' . $n;
         }

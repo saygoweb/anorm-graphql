@@ -78,4 +78,41 @@ class TypeInfoBuilderTest extends TestCase
         $this->assertSame('upsert', $info->mutations, 'the default');
         $this->assertSame([], (new TypeInfoBuilder())->build(new WidgetModel(new NullPdo()))->required);
     }
+
+    public function testADateTimePropertyIsADate(): void
+    {
+        $info = (new TypeInfoBuilder())->build(new EventModel(new NullPdo()));
+        $this->assertSame(['id' => 'ID', 'title' => 'String', 'notes' => 'String', 'dueOn' => 'Date'], $info->fields);
+    }
+
+    /**
+     * @dataProvider dateDeclarations
+     */
+    public function testEveryDateTimeInterfaceDeclarationIsADate(string $declaration, string $expected): void
+    {
+        $class = 'DateProbe' . md5($declaration);
+        eval("namespace Anorm\\GraphQL\\Test\\Tools; class $class extends \\Anorm\\Model {
+            public function __construct(\\PDO \$pdo) {
+                parent::__construct(\$pdo, \\Anorm\\DataMapper::create(\$pdo, 'probes', \\Anorm\\DataMapper::autoMap(\$this)));
+            }
+            /** @var int */ public \$id;
+            /** @var $declaration */ public \$when;
+        }");
+        $fqcn = __NAMESPACE__ . '\\' . $class;
+        $info = (new TypeInfoBuilder())->build(new $fqcn(new NullPdo()));
+        $this->assertSame($expected, $info->fields['when'], $declaration);
+    }
+
+    /** @return array<string, array<int, string>> */
+    public function dateDeclarations(): array
+    {
+        return [
+            'DateTime' => ['\DateTime', 'Date'],
+            'DateTimeImmutable' => ['\DateTimeImmutable', 'Date'],
+            'DateTimeInterface' => ['\DateTimeInterface', 'Date'],
+            'nullable' => ['\DateTime|null', 'Date'],
+            'another class' => ['\ArrayObject', 'String'],
+            'string' => ['string', 'String'],
+        ];
+    }
 }

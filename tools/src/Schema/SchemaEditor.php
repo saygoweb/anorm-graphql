@@ -135,8 +135,11 @@ class SchemaEditor
     private function fieldNames(TypeInfo $info)
     {
         $prefix = $info->fieldPrefix();
+        if ($info->inputOnly && !$info->readOnly) {
+            return array('query' => array(), 'mutation' => array());
+        }
         $names = array('query' => array('List' => $prefix . 'List'), 'mutation' => array());
-        if (!$info->readOnly) {
+        if (!$info->readOnly && !$info->inputOnly) {
             $kinds = $info->mutations === 'create-update' ? array('Create', 'Delete', 'Update') : array('Delete', 'Upsert');
             foreach ($kinds as $kind) {
                 $names['mutation'][$kind] = $prefix . $kind;

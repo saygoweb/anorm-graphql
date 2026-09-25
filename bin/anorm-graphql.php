@@ -2,7 +2,7 @@
 <?php
 namespace Anorm\GraphQL\Tools;
 
-define('ANORM_GRAPHQL_VERSION', '0.1.0');
+define('ANORM_GRAPHQL_VERSION', '0.2.0');
 
 // Installed as a dependency, relative to vendor/saygoweb/anorm-graphql/bin
 if (\file_exists(__DIR__ . '/../../../autoload.php')) {
@@ -55,6 +55,7 @@ class App
         $arguments->addOption('mutations', array('default' => $defaults->mutations, 'description' => 'upsert, or create-update for separate mutations'));
         $arguments->addOption('only', array('default' => '', 'description' => 'Comma-separated model names to include'));
         $arguments->addOption('readonly', array('default' => '', 'description' => 'Comma-separated models to emit without Input or mutations'));
+        $arguments->addOption('input-only', array('default' => '', 'description' => 'Comma-separated models to emit as Input only'));
         $arguments->parse();
         $this->options = $arguments;
         $positional = $arguments->getInvalidArguments();
@@ -116,6 +117,7 @@ class App
         $o->mutations = (string) $this->options['mutations'];
         $o->only = $this->names($this->options['only']);
         $o->readOnly = $this->names($this->options['readonly']);
+        $o->inputOnly = $this->names($this->options['input-only']);
         $o->force = (bool) $this->options['force'];
         $o->dryRun = (bool) $this->options['dry-run'];
         return $o;

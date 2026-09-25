@@ -29,6 +29,8 @@ class TypeMakerOptions
     public $only = array();
     /** @var string[] Entity or model class short names */
     public $readOnly = array();
+    /** @var string[] Entity or model class short names: emit their Input(s) only */
+    public $inputOnly = array();
     /** @var bool */
     public $force = false;
     /** @var bool */

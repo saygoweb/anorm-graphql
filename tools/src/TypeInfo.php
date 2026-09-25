@@ -10,7 +10,7 @@ class TypeInfo
     public $modelClass = '';
     /** @var string The model's key property, e.g. 'id' */
     public $keyProperty = '';
-    /** @var array<string, string> Property name => 'ID', 'Int', 'Float', 'Boolean' or 'String' */
+    /** @var array<string, string> Property name => 'ID', 'Int', 'Float', 'Boolean', 'String' or 'Date' */
     public $fields = array();
     /** @var bool true to emit no Input and no mutations */
     public $readOnly = false;
@@ -18,6 +18,8 @@ class TypeInfo
     public $mutations = 'upsert';
     /** @var string[] Non-key properties a create must supply: their docblock says `@required` */
     public $required = array();
+    /** @var bool true to emit the Input(s) only: no mutations, and no Type unless also read-only */
+    public $inputOnly = false;
 
     /** @return string The prefix of this entity's schema fields, e.g. 'client' */
     public function fieldPrefix()

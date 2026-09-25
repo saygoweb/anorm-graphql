@@ -102,6 +102,15 @@ $out['updateWithoutId'] = $run(
     ['input' => [['title' => 'x']]]
 );
 $out['mutations'] = array_keys($schema->getMutationType()->getFields());
+$out['dated'] = $run(
+    'mutation ($input: [EventCreateInput!]!) { eventCreate(input: $input) { id dueOn } }',
+    ['input' => [['title' => 'dated', 'dueOn' => '2026-03-04']]]
+);
+$out['badDate'] = $run(
+    'mutation ($input: [EventCreateInput!]!) { eventCreate(input: $input) { id } }',
+    ['input' => [['title' => 'bad', 'dueOn' => '2026-02-30']]]
+);
+$out['stored'] = $pdo->query("SELECT due_on FROM events WHERE title = 'dated'")->fetchColumn();
 $pdo->rollBack();
 echo json_encode($out);
 PHP
@@ -119,5 +128,10 @@ PHP
         $this->assertArrayHasKey('errors', $out['updateWithoutId'], 'an update names its row');
         sort($out['mutations']);
         $this->assertSame(['eventCreate', 'eventDelete', 'eventUpdate'], $out['mutations']);
+
+        $this->assertArrayNotHasKey('errors', $out['dated'], $output);
+        $this->assertSame('2026-03-04', $out['dated']['data']['eventCreate'][0]['dueOn']);
+        $this->assertSame('2026-03-04', $out['stored'], 'written to the DATE column as the same day');
+        $this->assertStringContainsString('Date must be a date as YYYY-MM-DD', json_encode($out['badDate']));
     }
 }

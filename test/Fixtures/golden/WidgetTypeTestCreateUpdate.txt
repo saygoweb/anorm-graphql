@@ -50,6 +50,7 @@ class EventTypeTest extends TestCase
             'id' => 'ID!',
             'title' => 'String',
             'notes' => 'String',
+            'dueOn' => 'Date',
         ];
     }
 
@@ -58,6 +59,7 @@ class EventTypeTest extends TestCase
         return [
             'title' => 'title 1',
             'notes' => 'notes 1',
+            'dueOn' => '2026-01-01',
         ];
     }
 
