@@ -175,6 +175,30 @@ Once per project, only if absent: `<tests>/TestCase.php` — **yours**.
 
 `<Entity>TypeBase` extends `Anorm\GraphQL\ModelType`, or the class given to `--type-base`.
 
+With `--mutations create-update`, in place of the two `WidgetInput*` rows above:
+
+| File | Written |
+|---|---|
+| `<output>/Widget/Base/WidgetCreateInputBase.php` | every run — **regenerated; do not edit** |
+| `<output>/Widget/Base/WidgetUpdateInputBase.php` | every run — **regenerated; do not edit** |
+| `<output>/Widget/WidgetCreateInput.php` | only if absent, or `--force` — **yours** |
+| `<output>/Widget/WidgetUpdateInput.php` | only if absent, or `--force` — **yours** |
+
+### Dates
+
+A property declared `\DateTimeInterface`, `\DateTime`, `\DateTimeImmutable` (or any
+class implementing `\DateTimeInterface`, by typed property or `@var`) becomes a
+`Date` field (`YYYY-MM-DD`), shared through `Anorm\GraphQL\Type\DateType::instance()`
+— one instance per process, never through the container. MySQL's zero date
+(`0000-00-00`) reads back as `null`. Give the model a date transformer so Anorm hands
+it a `\DateTime` and writes it back as `Y-m-d`:
+
+```php
+$this->mapper()->transformers['due_on'] = new \Anorm\Transform\SqlDateTimeTransform('Y-m-d');
+```
+
+Datetime columns (with a time component) are unaffected: they stay `String`.
+
 ## Options
 
 From `bin/anorm-graphql.php --help`:
@@ -201,8 +225,10 @@ Options
   --schema-ns        Namespace when scaffolding a new ApiSchema [default: App\GraphQL]
   --classsuffix, -c  Model suffix to strip [default: Model]
   --type-base        Class every generated TypeBase extends [default: Anorm\GraphQL\ModelType]
+  --mutations        upsert, or create-update for separate mutations [default: upsert]
   --only             Comma-separated model names to include
   --readonly         Comma-separated models to emit without Input or mutations
+  --input-only       Comma-separated models to emit as Input only
 ```
 
 `--type-base` names a class of your own for every generated `<Entity>TypeBase` to
@@ -215,6 +241,20 @@ written:
 
 See `docs/customising.md`, "A project base class via `--type-base`".
 
+`--mutations create-update` gives each writable entity `<entity>Create` and
+`<entity>Update` in place of `<entity>Upsert`, with two Inputs: `<Entity>CreateInput`
+(no key; a property whose docblock says `@required` is non-null) and
+`<Entity>UpdateInput` (the key is `ID!`; everything else optional, and a field left
+out is left as it was). Choose it when creating and changing a row differ enough —
+required fields, rules that only apply to an existing row — that one Input would
+hide it. Switching an existing project reports the old `<Entity>Input` files and
+`<entity>Upsert` entries as orphaned; nothing is deleted.
+
+`--input-only <names>` writes only the Input(s) for those entities, with no schema
+entries: for rows that are only ever written as part of another entity's input, such
+as an order's lines. Add `--readonly` for the same names to have their read-only Type
+and `<entity>List` too.
+
 An unknown argument is exit 2, and its default is never used silently:
 
 ```
@@ -224,8 +264,8 @@ Error: Unexpected argument '--outut', try '--help'
 ```
 (exit code 2)
 
-A name given to `--only` or `--readonly` that matches no model is the same kind of
-error:
+A name given to `--only`, `--readonly` or `--input-only` that matches no model is
+the same kind of error:
 
 ```
 Error: --only names 'Nope', which is not a model in test/Fixtures/Model

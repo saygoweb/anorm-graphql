@@ -294,6 +294,115 @@ A `SalesOrderType` living over the same `documents` table as a `QuotationType`
 would be two once-only subclasses like this, each generated read-only or read-write
 as appropriate, each with its own `scope()` value.
 
+## Separate create and update: `--mutations create-update`
+
+By default (`upsert`) one Input and one resolver (`resolveUpsert`) serve both create
+and update: an input without the key creates, an input with it updates. With
+`--mutations create-update` a writable entity instead gets two Inputs and two
+resolvers:
+
+```php
+public function resolveCreate($root, $args, Container $context): array;
+public function resolveUpdate($root, $args, Container $context): array;
+```
+
+Both are inherited from `ModelType` and go through the same private `write()` as
+`resolveUpsert`: all-or-nothing per batch, the same `authorize()` verbs
+(`VERB_CREATE` for a create, `VERB_EDIT` for an update) and the same `beforeWrite()`
+signature (`$isUpdate` false for a create, true for an update). A create whose input
+carries a non-empty key, or an update whose input carries none, is a client-safe
+`UserError` before anything is written.
+
+`<Entity>CreateInput` has no key field — a create makes it — and a property whose
+model docblock says `@required` is non-null there. `<Entity>UpdateInput` has the key
+as `ID!`; every other field is optional, and one left out of the input is left as it
+was (`Mapper::toModel()` only sets keys present in the array).
+
+Each Input is its own once-only subclass over a regenerated Base, exactly like the
+upsert Input, and each has its own `fields()` hook. Compiled by generating a real
+`WidgetCreateInput.php` with `docker/anorm-graphql make ... --mutations create-update`
+and adding a create-only field:
+
+```php
+<?php
+
+namespace Api\GraphQL\Type\Widget;
+
+use Anorm\GraphQL\Builder\FieldBuilder;
+use Api\GraphQL\Type\Widget\Base\WidgetCreateInputBase;
+use GraphQL\Type\Definition\Type;
+
+class WidgetCreateInput extends WidgetCreateInputBase
+{
+    protected function fields(): array
+    {
+        return array_merge(parent::fields(), [
+            FieldBuilder::create('initialStock', Type::int())->build(),
+        ]);
+    }
+}
+```
+
+`WidgetUpdateInput` follows the same shape, extending `WidgetUpdateInputBase`.
+
+Switching an existing project from `upsert` to `create-update` (or back) leaves the
+old Input files and `ApiSchema.php` entries in place, reported as orphaned rather
+than deleted, so nothing is lost by trying it.
+
+## Inputs of rows written inside another: `--input-only`
+
+For an entity whose rows are only ever written as part of another entity's input —
+FrontAccounting's `SalesOrderLine`, written inside a `SalesOrderInput`'s lines rather
+than through its own mutation — `--input-only <names>` writes just the Input(s)
+(`<Entity>Input` under `upsert`, `<Entity>CreateInput` / `<Entity>UpdateInput` under
+`create-update`), with no Type, no test, and no `ApiSchema` entries at all: no
+`<entity>List`, no `<entity>Upsert` / `<entity>Create` / `<entity>Update` /
+`<entity>Delete`.
+
+Combine it with `--readonly` on the same name to also get the read-only Type and its
+`<entity>List` (for reading the rows back, nested under their parent), while still
+emitting no mutation of the entity's own — its rows are still only ever *written*
+through the parent's input:
+
+```
+vendor/bin/anorm-graphql.php make ... --readonly SalesOrderLine --input-only SalesOrderLine
+```
+
+## Dates
+
+A model property declared `\DateTimeInterface`, `\DateTime`, `\DateTimeImmutable`,
+or any class implementing `\DateTimeInterface` — by a typed property or an `@var`
+docblock — is generated as a `Date` field rather than a `String`: ISO 8601
+`YYYY-MM-DD`, both out (`serialize`) and in (`parseValue` / `parseLiteral`). An
+invalid value is a client-safe `GraphQL\Error\Error`
+(`Date must be a date as YYYY-MM-DD: ...`), never an internal server error. MySQL's
+zero date (`0000-00-00`) serializes as `null`. A datetime column (with a time
+component) is unaffected and stays `String`, since `Date` only ever prints and
+parses the day.
+
+On the model side, Anorm hands a plain string back from the database unless told
+otherwise: give the property a date transformer so it becomes a real `\DateTime`
+(and is written back as `Y-m-d`):
+
+```php
+public function __construct(\PDO $pdo)
+{
+    parent::__construct($pdo, DataMapper::create($pdo, 'events', DataMapper::autoMap($this)));
+    $this->mapper()->transformers['due_on'] = new \Anorm\Transform\SqlDateTimeTransform('Y-m-d');
+}
+
+/** @var \DateTime */
+public $dueOn;
+```
+
+The scalar itself is one shared instance, `Anorm\GraphQL\Type\DateType::instance()`:
+a schema may hold only one type named `Date`, and generated code refers to this one,
+fully qualified, so it never needs an import and is never registered in the
+container. A computed date field added in your own `fields()` override must use the
+same instance — `FieldBuilder::create('someDate', \Anorm\GraphQL\Type\DateType::instance())`
+— never `new DateType(...)` or a container lookup, or the schema would hold two
+types named `Date` and refuse to build.
+
 ## Replacing `resolveUpsert` wholesale
 
 ```php
@@ -342,3 +451,6 @@ class WidgetType extends WidgetTypeBase
     }
 }
 ```
+
+Under `--mutations create-update`, replace `resolveCreate` and `resolveUpdate` the
+same way instead.

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0
+
+For the first consumer's second release (`saygoweb/frontaccounting-module-graphql`,
+Release 2). Default output is unchanged except for date properties (below).
+
+- `--mutations create-update`: `<entity>Create` / `<entity>Update` with
+  `<Entity>CreateInput` (no key; `@required` properties non-null) and
+  `<Entity>UpdateInput` (key required; fields left out are left as they were), in
+  place of `<entity>Upsert`. Runtime: `ModelType::resolveCreate()`,
+  `ModelType::resolveUpdate()`. `ModelTypeTestCase` tests both.
+- `--input-only <names>`: the Input(s) only, no schema entries; with `--readonly`,
+  the read-only Type and its list as well.
+- `Date` scalar (`Anorm\GraphQL\Type\DateType::instance()`), ISO `YYYY-MM-DD`. A
+  property declared `\DateTimeInterface` (or a class implementing it) is now a
+  `Date` field; in 0.1 it was a `String`.
+
 ## 0.1.0 — first alpha
 
 The first tagged release, for its first consumer (`saygoweb/frontaccounting-module-graphql`).
