@@ -12,6 +12,51 @@ override. Each example here was compiled by generating a real `WidgetType.php` (
 `docker/anorm-graphql php -l` against the result with the code pasted in; none of
 them is fabricated.
 
+## A project base class via `--type-base`
+
+When every Type in a project needs the same override — the same rights check, the
+same `newModel()` — put it in one abstract class and have every generated base
+extend it:
+
+```
+vendor/bin/anorm-graphql.php make ... --type-base 'App\GraphQL\Type\AppModelType'
+```
+
+```php
+<?php
+
+namespace App\GraphQL\Type;
+
+use Anorm\GraphQL\ModelType;
+use Anorm\Model;
+use App\Rights;
+use DI\Container;
+
+abstract class AppModelType extends ModelType
+{
+    /** @return array<string, string> verb => right; a verb with no entry is refused */
+    abstract protected function rights(): array;
+
+    protected function authorize(string $verb, ?Model $model, Container $context): void
+    {
+        $rights = $this->rights();
+        if (!isset($rights[$verb]) || !$context->get(Rights::class)->can($rights[$verb])) {
+            throw new \GraphQL\Error\UserError("Not allowed to $verb");
+        }
+    }
+}
+```
+
+The generated `WidgetTypeBase` then reads `abstract class WidgetTypeBase extends
+\App\GraphQL\Type\AppModelType`, written fully qualified so it cannot collide with
+anything the file imports. Because `rights()` is abstract, a `WidgetType` that does
+not declare it cannot be instantiated: a Type nobody configured fails closed rather
+than open.
+
+The class must extend `ModelType`, must not be final, and must be loadable when the
+generator runs. Leaving the option out gives exactly the output earlier versions
+gave.
+
 ## A rights check in `authorize()`
 
 Declared in `ModelType` as a method that does nothing. It is not abstract: override it as shown below.

@@ -173,6 +173,8 @@ Per entity, these files are written:
 
 Once per project, only if absent: `<tests>/TestCase.php` — **yours**.
 
+`<Entity>TypeBase` extends `Anorm\GraphQL\ModelType`, or the class given to `--type-base`.
+
 ## Options
 
 From `bin/anorm-graphql.php --help`:
@@ -198,9 +200,21 @@ Options
   --schema, -s       Path to ApiSchema.php; 'none' to skip [default: src/GraphQL/ApiSchema.php]
   --schema-ns        Namespace when scaffolding a new ApiSchema [default: App\GraphQL]
   --classsuffix, -c  Model suffix to strip [default: Model]
+  --type-base        Class every generated TypeBase extends [default: Anorm\GraphQL\ModelType]
   --only             Comma-separated model names to include
-  --readonly         Comma-separated model names to emit without Input or mutations
+  --readonly         Comma-separated model names to emit without Input or mutati
+                    ons
 ```
+
+`--type-base` names a class of your own for every generated `<Entity>TypeBase` to
+extend, in place of `Anorm\GraphQL\ModelType`. It must extend `ModelType`, must not be
+final, and must be loadable by your project's autoloader when the generator runs
+(run it from your project's `vendor/bin`). Anything else is exit 2 before a file is
+written:
+
+    Error: --type-base 'App\GraphQL\Missing' cannot be loaded: it is not a class the autoloader can find
+
+See `docs/customising.md`, "A project base class via `--type-base`".
 
 An unknown argument is exit 2, and its default is never used silently:
 
