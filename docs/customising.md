@@ -306,12 +306,20 @@ public function resolveCreate($root, $args, Container $context): array;
 public function resolveUpdate($root, $args, Container $context): array;
 ```
 
-Both are inherited from `ModelType` and go through the same private `write()` as
+Both are inherited from `ModelType` and go through the same protected `write()` as
 `resolveUpsert`: all-or-nothing per batch, the same `authorize()` verbs
 (`VERB_CREATE` for a create, `VERB_EDIT` for an update) and the same `beforeWrite()`
 signature (`$isUpdate` false for a create, true for an update). A create whose input
 carries a non-empty key, or an update whose input carries none, is a client-safe
 `UserError` before anything is written.
+
+The generated `resolveCreate()` assumes the key is generated (an `AUTO_INCREMENT`
+column, typically): it refuses any input that carries one at all. For an entity whose
+key a client chooses — FrontAccounting's `stock_id`, say — `create-update` as
+generated cannot be used unmodified. Override `resolveCreate()` in the once-only
+Type and call the inherited `write()` directly (it is `protected` for exactly this),
+passing whichever `$mode` fits the entity's own rules instead of refusing a supplied
+key outright.
 
 `<Entity>CreateInput` has no key field — a create makes it — and a property whose
 model docblock says `@required` is non-null there. `<Entity>UpdateInput` has the key
@@ -370,24 +378,34 @@ vendor/bin/anorm-graphql.php make ... --readonly SalesOrderLine --input-only Sal
 
 ## Dates
 
-A model property declared `\DateTimeInterface`, `\DateTime`, `\DateTimeImmutable`,
-or any class implementing `\DateTimeInterface` — by a typed property or an `@var`
-docblock — is generated as a `Date` field rather than a `String`: ISO 8601
-`YYYY-MM-DD`, both out (`serialize`) and in (`parseValue` / `parseLiteral`). An
-invalid value is a client-safe `GraphQL\Error\Error`
+A model property declared `\DateTimeInterface`, `\DateTimeImmutable`, or an `@var`
+docblock naming any class implementing `\DateTimeInterface` (including `\DateTime`,
+as a docblock only — see below), is generated as a `Date` field rather than a
+`String`: ISO 8601 `YYYY-MM-DD`, both out (`serialize`) and in (`parseValue` /
+`parseLiteral`). An invalid value is a client-safe `GraphQL\Error\Error`
 (`Date must be a date as YYYY-MM-DD: ...`), never an internal server error. MySQL's
-zero date (`0000-00-00`) serializes as `null`. A datetime column (with a time
-component) is unaffected and stays `String`, since `Date` only ever prints and
-parses the day.
+zero date (`0000-00-00`) serializes as `null` — whether it arrives as the raw string
+or, once a model applies a date transformer, as the `\DateTime` it rolls over to
+(`-0001-11-30`).
 
-On the model side, Anorm hands a plain string back from the database unless told
-otherwise: give the property a date transformer so it becomes a real `\DateTime`
-(and is written back as `Y-m-d`):
+The generator never reads the column, only the declared PHP type: declare a
+datetime property (one with a time component) as `string` to keep it a `String`
+— `Date` only ever prints and parses the day.
+
+**A natively typed `\DateTime` property is left as `String`, on purpose.**
+`parseValue()` / `parseLiteral()` always hand back a `\DateTimeImmutable`, and PHP
+enforces a native property type at assignment, so `public \DateTime $dueOn;` would
+throw a `TypeError` on every create or update. Declare the property
+`\DateTimeInterface` or `\DateTimeImmutable` instead (typed or `@var`), or leave it
+untyped with an `@var \DateTime` docblock — untyped, PHP never enforces it, so
+assigning a `\DateTimeImmutable` there is safe:
 
 ```php
 public function __construct(\PDO $pdo)
 {
     parent::__construct($pdo, DataMapper::create($pdo, 'events', DataMapper::autoMap($this)));
+    // Anorm hands a plain string back unless told otherwise: this makes it a real
+    // \DateTime, and writes it back as Y-m-d.
     $this->mapper()->transformers['due_on'] = new \Anorm\Transform\SqlDateTimeTransform('Y-m-d');
 }
 
@@ -399,9 +417,10 @@ The scalar itself is one shared instance, `Anorm\GraphQL\Type\DateType::instance
 a schema may hold only one type named `Date`, and generated code refers to this one,
 fully qualified, so it never needs an import and is never registered in the
 container. A computed date field added in your own `fields()` override must use the
-same instance — `FieldBuilder::create('someDate', \Anorm\GraphQL\Type\DateType::instance())`
-— never `new DateType(...)` or a container lookup, or the schema would hold two
-types named `Date` and refuse to build.
+same instance — `FieldBuilder::create('someDate', \Anorm\GraphQL\Type\DateType::instance())`.
+`DateType`'s constructor is private, so neither `new DateType(...)` nor a container
+lookup (`$container->get(DateType::class)`) can build a second one: both are refused
+before the schema gets the chance to hold two types named `Date` and fail to build.
 
 ## Replacing `resolveUpsert` wholesale
 

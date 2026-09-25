@@ -124,7 +124,7 @@ class TypeInfoBuilder
             case 'bool':
                 return 'Boolean';
             default:
-                return $this->isDate($declared, $modelClass) ? 'Date' : 'String';
+                return $this->isDate($property, $declared, $modelClass) ? 'Date' : 'String';
         }
     }
 
@@ -132,20 +132,37 @@ class TypeInfoBuilder
      * Whether a declared type is a date: \DateTimeInterface or a class implementing it.
      * A docblock usually gives the name as written, so the model's own namespace is tried too.
      *
+     * A property with a *native* PHP type has that type enforced at assignment, and
+     * parseValue()/parseLiteral() always hand back a \DateTimeImmutable — so a native
+     * type it cannot satisfy (typed \DateTime, which is unrelated to \DateTimeImmutable)
+     * would throw a TypeError on every create or update. Only a native type
+     * \DateTimeImmutable itself is happy with is treated as Date; an @var-only
+     * declaration is never enforced by PHP, so it is unaffected.
+     *
+     * @param string $property
      * @param string|null $type
      * @param string $modelClass
      */
-    private function isDate($type, $modelClass)
+    private function isDate($property, $type, $modelClass)
     {
         if ($type === null || \in_array($type, array('string', 'array'), true)) {
             return false;
         }
         $namespace = \substr($modelClass, 0, (int) \strrpos($modelClass, '\\'));
+        $isDateClass = false;
         foreach (array(\ltrim($type, '\\'), $namespace . '\\' . $type) as $candidate) {
             if ((\class_exists($candidate) || \interface_exists($candidate)) && \is_a($candidate, \DateTimeInterface::class, true)) {
-                return true;
+                $isDateClass = true;
+                break;
             }
         }
-        return false;
+        if (!$isDateClass) {
+            return false;
+        }
+        $native = (new \ReflectionProperty($modelClass, $property))->getType();
+        if ($native instanceof \ReflectionNamedType && !\is_a(\DateTimeImmutable::class, $native->getName(), true)) {
+            return false;
+        }
+        return true;
     }
 }

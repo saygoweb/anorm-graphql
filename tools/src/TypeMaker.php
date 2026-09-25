@@ -151,6 +151,9 @@ class TypeMaker
             foreach ($this->staleInputs($info) as $path) {
                 $this->report[] = "orphaned $path ('{$info->entity}' $why; not deleted)";
             }
+            foreach ($this->staleTypes($info) as $path) {
+                $this->report[] = "orphaned $path ('{$info->entity}' is input-only now; not deleted)";
+            }
         }
         foreach ($locator->skipped + $builder->skipped + $unusable + $this->unparseable as $what => $why) {
             $this->report[] = "skipped  $what: $why";
@@ -264,6 +267,26 @@ class TypeMaker
             }
         }
         return $stale;
+    }
+
+    /**
+     * Type files on disk that an input-only (but not read-only) entity no longer
+     * produces: its Input(s) are still its own, but its Type, TypeBase and test
+     * became someone else's problem the moment it switched to --input-only.
+     *
+     * @return string[]
+     */
+    private function staleTypes(TypeInfo $info)
+    {
+        if (!$info->inputOnly || $info->readOnly) {
+            return array();
+        }
+        $dir = $this->join($this->options->outputDir, $info->entity);
+        $paths = array("$dir/Base/{$info->entity}TypeBase.php", "$dir/{$info->entity}Type.php");
+        if ($this->options->testsDir !== null) {
+            $paths[] = $this->join($this->options->testsDir, "{$info->entity}TypeTest.php");
+        }
+        return \array_values(\array_filter($paths, 'file_exists'));
     }
 
     /**

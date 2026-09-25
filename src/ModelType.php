@@ -120,11 +120,16 @@ abstract class ModelType extends ObjectType
     }
 
     /**
+     * The shared write path behind resolveUpsert()/resolveCreate()/resolveUpdate().
+     * Protected, not private, so a resolver replaced wholesale (see
+     * docs/customising.md, "Replacing resolveUpsert wholesale") can still reuse it —
+     * for example a user-chosen key, which the generated resolveCreate() refuses.
+     *
      * @param array<int, array<string, mixed>> $inputs
      * @param string $mode 'upsert', 'create' or 'update'
      * @return array<int, array<string, mixed>>
      */
-    private function write(array $inputs, Container $context, string $mode): array
+    protected function write(array $inputs, Container $context, string $mode): array
     {
         $probe = $this->newModel($context);
         $this->assertStaticMode($probe);

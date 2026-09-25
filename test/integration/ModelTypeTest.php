@@ -548,4 +548,21 @@ class ModelTypeTest extends TestCase
         $this->expectExceptionMessage("'type' is fixed for InvoiceType");
         $type->resolveCreate(null, ['input' => [['type' => 99, 'title' => 'x']]], $this->context);
     }
+
+    /**
+     * A project that needs to do more than resolveCreate()/resolveUpdate() already do
+     * (a user-chosen key, say) can override the resolver wholesale and still reuse
+     * write(): it is protected, not private, for exactly this.
+     */
+    public function testWriteIsProtectedSoAnOverrideCanReuseIt(): void
+    {
+        $type = new class extends RecordingWidgetType {
+            public function resolveCreate($root, $args, Container $context): array
+            {
+                return $this->write($args['input'], $context, 'create');
+            }
+        };
+        $rows = $type->resolveCreate(null, ['input' => [['name' => 'a']]], $this->context);
+        $this->assertSame('a', $rows[0]['name']);
+    }
 }

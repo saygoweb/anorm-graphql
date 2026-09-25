@@ -186,18 +186,31 @@ With `--mutations create-update`, in place of the two `WidgetInput*` rows above:
 
 ### Dates
 
-A property declared `\DateTimeInterface`, `\DateTime`, `\DateTimeImmutable` (or any
-class implementing `\DateTimeInterface`, by typed property or `@var`) becomes a
-`Date` field (`YYYY-MM-DD`), shared through `Anorm\GraphQL\Type\DateType::instance()`
-— one instance per process, never through the container. MySQL's zero date
-(`0000-00-00`) reads back as `null`. Give the model a date transformer so Anorm hands
-it a `\DateTime` and writes it back as `Y-m-d`:
+A property declared `\DateTimeInterface`, `\DateTimeImmutable`, or an `@var`
+docblock naming any class implementing `\DateTimeInterface` (including `\DateTime`,
+as a docblock only — see below), becomes a `Date` field (`YYYY-MM-DD`), shared
+through `Anorm\GraphQL\Type\DateType::instance()` — one instance per process, never
+through the container. MySQL's zero date (`0000-00-00`) reads back as `null`, whether
+it arrives as the raw string or, once a model applies a date transformer, as the
+`\DateTime` it rolls over to (`-0001-11-30`). Give the model a date transformer so
+Anorm hands it a `\DateTime` and writes it back as `Y-m-d`:
 
 ```php
 $this->mapper()->transformers['due_on'] = new \Anorm\Transform\SqlDateTimeTransform('Y-m-d');
 ```
 
-Datetime columns (with a time component) are unaffected: they stay `String`.
+**A natively typed `\DateTime` property is the one exception**: `parseValue()` /
+`parseLiteral()` always hand back a `\DateTimeImmutable`, and PHP enforces a native
+property type at assignment, so `public \DateTime $dueOn;` would throw a `TypeError`
+on every create or update. The generator leaves such a property as `String` rather
+than generate code that fails at runtime. Declare it `\DateTimeInterface` or
+`\DateTimeImmutable` instead (typed or `@var`), or leave the property untyped with
+an `@var \DateTime` docblock (not enforced by PHP, so safe) if the model must keep
+assigning a `\DateTime`.
+
+The generator never reads the column, only the declared PHP type: declare a
+datetime property (one with a time component) as `string` to keep it a `String`
+— `Date` only ever prints and parses the day.
 
 ## Options
 

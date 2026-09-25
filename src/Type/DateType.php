@@ -35,6 +35,16 @@ class DateType extends ScalarType
     }
 
     /**
+     * Private so nothing but instance() can build one: a container asked for
+     * DateType::class by name would otherwise autowire a second `Date`, and a schema
+     * may hold only one type with that name.
+     */
+    private function __construct(array $config)
+    {
+        parent::__construct($config);
+    }
+
+    /**
      * @param mixed $value
      * @return string|null
      * @throws SerializationError
@@ -42,7 +52,11 @@ class DateType extends ScalarType
     public function serialize($value)
     {
         if ($value instanceof \DateTimeInterface) {
-            return $value->format('Y-m-d');
+            // A zero date ('0000-00-00'), once turned into a \DateTime by a model's
+            // transformer, rolls back to year 0 (-0001-11-30 in the proleptic
+            // Gregorian calendar) rather than staying the string MySQL sent. Both mean
+            // "no date".
+            return (int) $value->format('Y') < 1 ? null : $value->format('Y-m-d');
         }
         if (is_string($value)) {
             // MySQL's zero date is how older schemas say "no date".

@@ -115,4 +115,42 @@ class TypeInfoBuilderTest extends TestCase
             'string' => ['string', 'String'],
         ];
     }
+
+    /**
+     * A native PHP type is enforced at assignment; parseValue() always hands back a
+     * \DateTimeImmutable. A property natively typed \DateTime cannot take one (they
+     * are unrelated classes), so it must not be generated as Date — that would throw
+     * a TypeError on every create or update. \DateTimeImmutable and \DateTimeInterface
+     * are both satisfied by a \DateTimeImmutable, so they stay Date. An @var-only
+     * declaration (see dateDeclarations() above) is never enforced, so it is unaffected.
+     *
+     * @dataProvider typedDateDeclarations
+     */
+    public function testANativelyTypedPropertyIsADateOnlyWhenADateTimeImmutableSatisfiesIt(
+        string $declaration,
+        string $expected
+    ): void {
+        $class = 'TypedDateProbe' . md5($declaration);
+        eval("namespace Anorm\\GraphQL\\Test\\Tools; class $class extends \\Anorm\\Model {
+            public function __construct(\\PDO \$pdo) {
+                parent::__construct(\$pdo, \\Anorm\\DataMapper::create(\$pdo, 'probes', \\Anorm\\DataMapper::autoMap(\$this)));
+            }
+            /** @var int */ public \$id;
+            public $declaration \$when;
+        }");
+        $fqcn = __NAMESPACE__ . '\\' . $class;
+        $info = (new TypeInfoBuilder())->build(new $fqcn(new NullPdo()));
+        $this->assertSame($expected, $info->fields['when'], $declaration);
+    }
+
+    /** @return array<string, array<int, string>> */
+    public function typedDateDeclarations(): array
+    {
+        return [
+            'typed DateTime' => ['\DateTime', 'String'],
+            'typed DateTimeImmutable' => ['\DateTimeImmutable', 'Date'],
+            'typed DateTimeInterface' => ['\DateTimeInterface', 'Date'],
+            'typed nullable DateTime' => ['?\DateTime', 'String'],
+        ];
+    }
 }

@@ -13,8 +13,14 @@ Release 2). Default output is unchanged except for date properties (below).
 - `--input-only <names>`: the Input(s) only, no schema entries; with `--readonly`,
   the read-only Type and its list as well.
 - `Date` scalar (`Anorm\GraphQL\Type\DateType::instance()`), ISO `YYYY-MM-DD`. A
-  property declared `\DateTimeInterface` (or a class implementing it) is now a
-  `Date` field; in 0.1 it was a `String`.
+  property declared `\DateTimeInterface` or `\DateTimeImmutable` (or a class
+  implementing it) is now a `Date` field; in 0.1 it was a `String`. A natively typed
+  `\DateTime` property is left as `String`, since `parseValue()`/`parseLiteral()`
+  hand back a `\DateTimeImmutable`, which such a property cannot take. `DateType`'s
+  constructor is private, so only `DateType::instance()` — never `new DateType(...)`
+  or a container lookup — can build one. MySQL's zero date (`0000-00-00`) serializes
+  as `null` whether it arrives as a string or, through a model's date transformer, as
+  the `\DateTime` it rolls over to.
 
 ## 0.1.0 — first alpha
 

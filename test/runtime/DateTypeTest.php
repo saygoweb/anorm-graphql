@@ -3,6 +3,7 @@
 namespace Anorm\GraphQL\Test\Runtime;
 
 use Anorm\GraphQL\Type\DateType;
+use DI\Container;
 use GraphQL\Error\Error;
 use GraphQL\Error\SerializationError;
 use GraphQL\Language\AST\IntValueNode;
@@ -18,6 +19,20 @@ class DateTypeTest extends TestCase
         DateType::instance()->assertValid();
     }
 
+    /**
+     * The checklist requires one `Date` instance: nothing may build a second one,
+     * not `new DateType(...)` and not a container asked for it by class name.
+     */
+    public function testNoOtherRouteCanBuildASecondInstance(): void
+    {
+        $this->assertFalse(
+            (new \ReflectionClass(DateType::class))->isInstantiable(),
+            'a private constructor is the only way a container route can be refused'
+        );
+        $this->expectException(\Throwable::class);
+        (new Container())->get(DateType::class);
+    }
+
     public function testSerialisesDatesAndDateStrings(): void
     {
         $type = DateType::instance();
@@ -27,6 +42,10 @@ class DateTypeTest extends TestCase
         $this->assertSame('2026-03-04', $type->serialize('2026-03-04 00:00:00'));
         $this->assertNull($type->serialize('0000-00-00'), "MySQL's zero date is no date");
         $this->assertNull($type->serialize('0000-00-00 00:00:00'));
+        // A zero date read through a model with a date transformer arrives as a
+        // \DateTime rolled back to year 0 (-0001-11-30), not as the string '0000-00-00'.
+        $this->assertNull($type->serialize(new \DateTime('0000-00-00')), 'a rolled-over zero date is still no date');
+        $this->assertNull($type->serialize(new \DateTimeImmutable('0000-00-00 00:00:00')));
     }
 
     /**

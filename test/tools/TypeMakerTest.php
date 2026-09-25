@@ -490,4 +490,22 @@ class TypeMakerTest extends TestCase
         $this->assertStringContainsString("--input-only names 'Nope'", $maker->report[0]);
         $this->assertDirectoryDoesNotExist("$this->dir/src");
     }
+
+    public function testSwitchingToInputOnlyReportsTheOldTypeAndTestAndDeletesNothing(): void
+    {
+        $this->make($this->options());
+        $o = $this->options();
+        $o->inputOnly = ['Owner'];
+        $report = implode("\n", $this->make($o)->report);
+        foreach (
+            [
+                "$this->dir/src/Type/Owner/OwnerType.php",
+                "$this->dir/src/Type/Owner/Base/OwnerTypeBase.php",
+                "$this->dir/tests/OwnerTypeTest.php",
+            ] as $path
+        ) {
+            $this->assertStringContainsString("orphaned $path ('Owner' is input-only now; not deleted)", $report);
+            $this->assertFileExists($path);
+        }
+    }
 }
