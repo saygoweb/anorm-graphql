@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0
+
+For the first consumer's third release (Release 3, billing). Default output is
+unchanged.
+
+- `--without-update <names>` and `--without-delete <names>`: drop an entity's
+  `<entity>Update` or `<entity>Delete` mutation, everything else generated as before.
+  `--without-update` also drops the Update input files (`Base/<Entity>UpdateInputBase.php`,
+  `<Entity>UpdateInput.php`) and needs `--mutations create-update` (exit 2 under
+  `upsert`, naming the conflict); `--without-delete` works under either mutations
+  mode. Naming an entity no model produces is exit 2, as for `--only` / `--readonly` /
+  `--input-only`. Switching an entity to `--without-update` reports its now-stale
+  Update input files as orphaned, not deleted, exactly like the 0.2.0 `--input-only`
+  stale reporting; a schema entry orphaned by the switch is reported as orphaned as
+  before. `ModelTypeTestCase`'s generated lifecycle test skips the update and/or
+  delete step cleanly for such an entity — no `markTestIncomplete` noise for a step
+  that does not exist, only for the pre-existing case (update applicable but nothing
+  to exercise it with).
+
 ## 0.2.1
 
 Fix only, for the first consumer's second release. Default output is unchanged for

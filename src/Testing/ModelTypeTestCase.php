@@ -42,11 +42,31 @@ abstract class ModelTypeTestCase extends TestCase
     /**
      * @return string|null Class name of the update Input when the Type has separate
      *   create and update mutations (`--mutations create-update`); inputClass() is then
-     *   the create Input. null for upsert.
+     *   the create Input. null for upsert, or for a create-update entity with no update
+     *   mutation at all (`--without-update`; see usesCreateMutation()).
      */
     protected function updateInputClass(): ?string
     {
         return null;
+    }
+
+    /**
+     * @return bool Whether creates go through a separate <entity>Create mutation
+     *   (inputClass() is then the create Input) rather than <entity>Upsert. True for
+     *   `--mutations create-update`, even when the entity has no update mutation at all
+     *   (`--without-update`, updateInputClass() then null). Defaults to whether there is
+     *   an update Input, which is right whenever create-update entities keep their
+     *   update mutation.
+     */
+    protected function usesCreateMutation(): bool
+    {
+        return $this->updateInputClass() !== null;
+    }
+
+    /** @return bool Whether this entity has a <entity>Delete mutation at all */
+    protected function hasDeleteMutation(): bool
+    {
+        return true;
     }
 
     /** @return string[] Fields a create must supply: non-null on the create Input */
@@ -121,9 +141,11 @@ abstract class ModelTypeTestCase extends TestCase
             $this->addToAssertionCount(1);
             return;
         }
-        if ($this->updateInputClass() !== null) {
+        if ($this->usesCreateMutation()) {
             $this->assertInputFields((string) $this->inputClass(), true);
-            $this->assertInputFields((string) $this->updateInputClass(), false);
+            if ($this->updateInputClass() !== null) {
+                $this->assertInputFields((string) $this->updateInputClass(), false);
+            }
             return;
         }
         $input = $this->container->get($this->inputClass());
@@ -184,7 +206,7 @@ abstract class ModelTypeTestCase extends TestCase
         $prefix = $this->entityName();
         $before = count($this->listAll());
 
-        $separate = $this->updateInputClass() !== null;
+        $separate = $this->usesCreateMutation();
         $created = $separate
             ? $this->create([$this->sampleInput(), $this->sampleInput()])
             : $this->upsert([$this->sampleInput(), $this->sampleInput()]);
@@ -201,7 +223,12 @@ abstract class ModelTypeTestCase extends TestCase
         $this->assertCount(1, $one, 'a selector on the key is the single-item view');
         $this->assertEquals($id, $one[0][$key]);
 
-        if ($this->sampleUpdate()) {
+        // An upsert-style entity always has a way to update (the same mutation, given
+        // the key); a create-update entity only when it kept its update mutation
+        // (`--without-update` drops updateInputClass() to null, and with it this).
+        $canUpdate = !$separate || $this->updateInputClass() !== null;
+        $exercisedUpdate = false;
+        if ($canUpdate && $this->sampleUpdate()) {
             $change = [$key => $id] + $this->sampleUpdate();
             $updated = $separate ? $this->update([$change]) : $this->upsert([$change]);
             $this->assertCount(1, $updated);
@@ -217,19 +244,23 @@ abstract class ModelTypeTestCase extends TestCase
                 }
             }
             $this->assertCount($before + 2, $this->listAll(), 'an update should not add a row');
+            $exercisedUpdate = true;
         }
 
-        $deleted = $this->execute(
-            "mutation (\$id: [ID!]!) { {$prefix}Delete(id: \$id) { {$this->selection()} } }",
-            ['id' => [$id]]
-        )["{$prefix}Delete"];
-        $this->assertCount(1, $deleted, 'delete should return the row it removed');
-        $this->assertEquals($id, $deleted[0][$key]);
-        $this->assertCount(0, $this->listWhere([$key => $id]), 'the deleted row should be gone');
-        $this->assertCount($before + 1, $this->listAll());
+        if ($this->hasDeleteMutation()) {
+            $deleted = $this->execute(
+                "mutation (\$id: [ID!]!) { {$prefix}Delete(id: \$id) { {$this->selection()} } }",
+                ['id' => [$id]]
+            )["{$prefix}Delete"];
+            $this->assertCount(1, $deleted, 'delete should return the row it removed');
+            $this->assertEquals($id, $deleted[0][$key]);
+            $this->assertCount(0, $this->listWhere([$key => $id]), 'the deleted row should be gone');
+            $this->assertCount($before + 1, $this->listAll());
+        }
 
-        if (!$this->sampleUpdate()) {
-            // Create, view and delete were exercised; saying nothing would pass the update off as tested.
+        if ($canUpdate && !$exercisedUpdate) {
+            // Create, view and (when this entity has one) delete were exercised;
+            // saying nothing would pass the update off as tested.
             $this->markTestIncomplete('sampleUpdate() is empty, so updating was not exercised');
         }
     }

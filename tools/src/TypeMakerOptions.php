@@ -31,6 +31,11 @@ class TypeMakerOptions
     public $readOnly = array();
     /** @var string[] Entity or model class short names: emit their Input(s) only */
     public $inputOnly = array();
+    /** @var string[] Entity or model class short names: no Update mutation or Input;
+     *  needs --mutations create-update */
+    public $withoutUpdate = array();
+    /** @var string[] Entity or model class short names: no Delete mutation */
+    public $withoutDelete = array();
     /** @var bool */
     public $force = false;
     /** @var bool */

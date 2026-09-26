@@ -144,6 +144,12 @@ class SchemaEditor
         $names = array('query' => array('List' => $prefix . 'List'), 'mutation' => array());
         if (!$info->readOnly && !$info->inputOnly) {
             $kinds = $info->mutations === 'create-update' ? array('Create', 'Delete', 'Update') : array('Delete', 'Upsert');
+            if ($info->withoutUpdate) {
+                $kinds = \array_diff($kinds, array('Update'));
+            }
+            if ($info->withoutDelete) {
+                $kinds = \array_diff($kinds, array('Delete'));
+            }
             foreach ($kinds as $kind) {
                 $names['mutation'][$kind] = $prefix . $kind;
             }

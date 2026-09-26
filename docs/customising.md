@@ -376,6 +376,42 @@ through the parent's input:
 vendor/bin/anorm-graphql.php make ... --readonly SalesOrderLine --input-only SalesOrderLine
 ```
 
+## No update, or no delete: `--without-update` and `--without-delete`
+
+Some documents are only ever created and voided, never edited in place — a posted
+invoice, say, where a correction means voiding it and entering it again. For those,
+`--without-update <names>` and `--without-delete <names>` drop the mutation an entity
+would otherwise get, with everything else about it generated exactly as before.
+
+`--without-update <names>` needs `--mutations create-update`: under `upsert` there is
+no separate Update to drop (one Input and one resolver serve both create and
+update), so naming an entity is exit 2:
+
+```
+Error: --without-update names 'Invoice', which needs --mutations create-update, not 'upsert'
+```
+
+Named under `create-update`, the entity gets `<entity>Create` and no
+`<entity>Update` at all: no `<Entity>UpdateInputBase.php` / `<Entity>UpdateInput.php`,
+and no `resolveUpdate` entry in `ApiSchema.php`. Its generated test drops the update
+step of the lifecycle test cleanly — no `markTestIncomplete` for "update not
+exercised", since there is no update to exercise — while everything else (the create
+step, the list, and delete unless that is dropped too) still runs.
+
+`--without-delete <names>` works under either `--mutations` mode: the entity gets no
+`<entity>Delete` at all, and its generated test's lifecycle skips the delete step the
+same way.
+
+```
+vendor/bin/anorm-graphql.php make ... --mutations create-update --without-update Invoice --without-delete Invoice
+```
+
+Switching an entity to `--without-update` leaves its old `<Entity>UpdateInput.php` /
+`Base/<Entity>UpdateInputBase.php` in place, reported as orphaned rather than
+deleted, exactly like switching `--mutations` (above); the `<entity>Update` schema
+entry it leaves behind is reported the same way `ApiSchema.php` always reports an
+entry no model produces any more.
+
 ## Dates
 
 A model property declared `\DateTimeInterface`, `\DateTimeImmutable`, or an `@var`

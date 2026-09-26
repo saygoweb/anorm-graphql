@@ -82,10 +82,15 @@ class CliTest extends TestCase
 
     public function testVersionAndHelp(): void
     {
-        $this->assertSame([0, '0.2.1'], $this->cli(['--version']));
+        $this->assertSame([0, '0.3.0'], $this->cli(['--version']));
         [$exit, $output] = $this->cli(['--help']);
         $this->assertSame(0, $exit);
-        foreach (['--models', '--type-ns', '--schema', '--readonly', '--dry-run', '--force', '--mutations', '--input-only'] as $option) {
+        foreach (
+            [
+                '--models', '--type-ns', '--schema', '--readonly', '--dry-run', '--force', '--mutations',
+                '--input-only', '--without-update', '--without-delete',
+            ] as $option
+        ) {
             $this->assertStringContainsString($option, $output);
         }
     }
@@ -166,5 +171,38 @@ class CliTest extends TestCase
         $this->assertSame(0, $exit, $output);
         $this->assertFileExists("$this->dir/Type/Owner/OwnerInput.php");
         $this->assertFileDoesNotExist("$this->dir/Type/Owner/OwnerType.php");
+    }
+
+    public function testWithoutUpdateThroughTheCommandLine(): void
+    {
+        $arguments = array_merge($this->make(), ['--mutations', 'create-update', '--without-update', 'Widget']);
+        [$exit, $output] = $this->cli($arguments);
+        $this->assertSame(0, $exit, $output);
+        $this->assertFileExists("$this->dir/Type/Widget/WidgetCreateInput.php");
+        $this->assertFileDoesNotExist("$this->dir/Type/Widget/WidgetUpdateInput.php");
+        $schema = file_get_contents("$this->dir/ApiSchema.php");
+        $this->assertStringContainsString("'widgetCreate'", $schema);
+        $this->assertStringNotContainsString("'widgetUpdate'", $schema);
+    }
+
+    public function testWithoutUpdateNeedsCreateUpdateThroughTheCommandLine(): void
+    {
+        [$exit, $output] = $this->cli(array_merge($this->make(), ['--without-update', 'Widget']));
+        $this->assertSame(2, $exit, $output);
+        $this->assertStringContainsString(
+            "--without-update names 'Widget', which needs --mutations create-update, not 'upsert'",
+            $output
+        );
+        $this->assertSame(['.', '..'], scandir($this->dir), 'nothing may be written');
+    }
+
+    public function testWithoutDeleteThroughTheCommandLine(): void
+    {
+        [$exit, $output] = $this->cli(array_merge($this->make(), ['--without-delete', 'Owner']));
+        $this->assertSame(0, $exit, $output);
+        $schema = file_get_contents("$this->dir/ApiSchema.php");
+        $this->assertStringContainsString("'ownerUpsert'", $schema);
+        $this->assertStringNotContainsString("'ownerDelete'", $schema);
+        $this->assertStringContainsString("'widgetDelete'", $schema);
     }
 }

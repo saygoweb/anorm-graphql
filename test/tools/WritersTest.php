@@ -221,4 +221,37 @@ class WritersTest extends TestCase
         $this->assertStringContainsString("'dueOn' => 'Date',", $code);
         $this->assertStringContainsString("'dueOn' => '2026-01-01',", $code);
     }
+
+    public function testTestWithoutUpdateHasNoUpdateInputOrMethod(): void
+    {
+        $info = $this->createUpdate($this->info());
+        $info->withoutUpdate = true;
+        $code = (new TestWriter())->render($info, 'App\GraphQL\Type', 'Tests\GraphQL');
+        $this->assertGolden('WidgetTypeTestWithoutUpdate', $code);
+        $this->assertStringContainsString('function usesCreateMutation(): bool', $code);
+        $this->assertStringNotContainsString('UpdateInput', $code);
+        $this->assertStringNotContainsString('function updateInputClass', $code);
+        $this->assertStringContainsString('function requiredFields(): array', $code, 'still needed for the create input');
+    }
+
+    public function testTestWithoutDeleteHasNoDeleteStep(): void
+    {
+        $info = $this->info();
+        $info->withoutDelete = true;
+        $code = (new TestWriter())->render($info, 'App\GraphQL\Type', 'Tests\GraphQL');
+        $this->assertGolden('WidgetTypeTestWithoutDelete', $code);
+        $this->assertStringContainsString('function hasDeleteMutation(): bool', $code);
+        $this->assertStringContainsString('return false;', $code);
+    }
+
+    public function testTestWithoutUpdateAndWithoutDeleteCombine(): void
+    {
+        $info = $this->createUpdate($this->info());
+        $info->withoutUpdate = true;
+        $info->withoutDelete = true;
+        $code = (new TestWriter())->render($info, 'App\GraphQL\Type', 'Tests\GraphQL');
+        $this->assertGolden('WidgetTypeTestWithoutUpdateAndDelete', $code);
+        $this->assertStringContainsString('function usesCreateMutation(): bool', $code);
+        $this->assertStringContainsString('function hasDeleteMutation(): bool', $code);
+    }
 }

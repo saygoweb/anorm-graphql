@@ -3,9 +3,12 @@
 namespace Anorm\GraphQL\Test\Integration;
 
 use Anorm\GraphQL\Test\Fixtures\LegacyWidgetCase;
+use Anorm\GraphQL\Test\Fixtures\NoDeleteWidgetCase;
+use Anorm\GraphQL\Test\Fixtures\NoUpdateWidgetCase;
 use Anorm\GraphQL\Test\Fixtures\PlainWidgetCase;
 use Anorm\GraphQL\Test\TestEnvironment;
 use PHPUnit\Framework\TestCase;
+use PHPUnit\Framework\TestResult;
 
 /**
  * The test case consumers extend runs against their real database, and cleans up by
@@ -33,6 +36,16 @@ class ModelTypeTestCaseTest extends TestCase
     private function rows(): int
     {
         return (int) TestEnvironment::pdo()->query('SELECT COUNT(*) FROM `legacy_widgets`')->fetchColumn();
+    }
+
+    /** What went wrong, for an assertion message; a TestResult has no __toString(). */
+    private function describe(TestResult $result): string
+    {
+        $messages = [];
+        foreach (array_merge($result->errors(), $result->failures()) as $defect) {
+            $messages[] = $defect->exceptionMessage();
+        }
+        return implode("\n", $messages);
     }
 
     public function testTheLifecycleTestRefusesToWriteToATableThatCannotRollBack(): void
@@ -94,5 +107,32 @@ class ModelTypeTestCaseTest extends TestCase
         $result = (new LegacyWidgetCase('testListReturnsAList'))->run();
         $this->assertTrue($result->wasSuccessful());
         $this->assertSame(0, $result->skippedCount());
+    }
+
+    public function testAnEntityWithoutAnUpdateMutationSkipsTheUpdateStepCleanly(): void
+    {
+        TestEnvironment::pdo()->exec('DELETE FROM `widgets`');
+        $result = (new NoUpdateWidgetCase('testLifecycle'))->run();
+        $this->assertTrue($result->wasSuccessful(), $this->describe($result));
+        $this->assertSame(0, $result->skippedCount());
+        $this->assertSame(0, $result->notImplementedCount(), 'no update mutation is not "update untested"');
+    }
+
+    public function testAnEntityWithoutAnUpdateMutationStillMirrorsTheCreateInput(): void
+    {
+        $result = (new NoUpdateWidgetCase('testInputMirrorsTheType'))->run();
+        $this->assertTrue($result->wasSuccessful(), $this->describe($result));
+    }
+
+    public function testAnEntityWithoutADeleteMutationSkipsTheDeleteStepCleanly(): void
+    {
+        TestEnvironment::pdo()->exec('DELETE FROM `widgets`');
+        $result = (new NoDeleteWidgetCase('testLifecycle'))->run();
+        $this->assertTrue($result->wasSuccessful(), $this->describe($result));
+        $this->assertSame(0, $result->skippedCount());
+        $this->assertSame(0, $result->notImplementedCount());
+        // Nothing left behind: rolled back, and never reached through a delete either.
+        $count = (int) TestEnvironment::pdo()->query('SELECT COUNT(*) FROM `widgets`')->fetchColumn();
+        $this->assertSame(0, $count);
     }
 }

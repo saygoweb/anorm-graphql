@@ -1,0 +1,77 @@
+<?php
+
+namespace Tests\GraphQL;
+
+use App\GraphQL\Type\Widget\WidgetCreateInput;
+use App\GraphQL\Type\Widget\WidgetType;
+
+/**
+ * Yours to edit: anorm-graphql writes this file once and never again.
+ * The tests themselves are inherited from Anorm\GraphQL\Testing\ModelTypeTestCase.
+ */
+class WidgetTypeTest extends TestCase
+{
+    protected function typeClass(): string
+    {
+        return WidgetType::class;
+    }
+
+    protected function inputClass(): ?string
+    {
+        return WidgetCreateInput::class;
+    }
+
+    protected function usesCreateMutation(): bool
+    {
+        return true;
+    }
+
+    protected function requiredFields(): array
+    {
+        return [
+        ];
+    }
+
+    protected function entityName(): string
+    {
+        return 'widget';
+    }
+
+    protected function keyField(): string
+    {
+        return 'id';
+    }
+
+    protected function expectedFieldTypes(): array
+    {
+        return [
+            'id' => 'ID!',
+            'name' => 'String',
+            'quantity' => 'Int',
+            'price' => 'Float',
+            'active' => 'Boolean',
+            'ownerId' => 'ID',
+            'notes' => 'String',
+        ];
+    }
+
+    protected function sampleInput(): array
+    {
+        // Foreign keys are left out: the generator cannot know a valid parent row.
+        // If any is required, create the parent here and add: ownerId
+        return [
+            'name' => 'name 1',
+            'quantity' => 1,
+            'price' => 1.5,
+            'active' => true,
+            'notes' => 'notes 1',
+        ];
+    }
+
+    protected function sampleUpdate(): array
+    {
+        // This entity has no update mutation (--without-update): nothing to update.
+        return [
+        ];
+    }
+}

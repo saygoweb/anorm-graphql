@@ -12,16 +12,38 @@ class TestWriter
         $uses = "use $entityNamespace\\{$info->entity}Type;\n";
         $inputClass = 'null';
         $createUpdate = '';
+        $skipUpdateFields = false;
         if (!$info->readOnly && $info->mutations === 'create-update') {
-            $uses = "use $entityNamespace\\{$info->entity}CreateInput;\n"
-                . "use $entityNamespace\\{$info->entity}Type;\n"
-                . "use $entityNamespace\\{$info->entity}UpdateInput;\n";
-            $inputClass = "{$info->entity}CreateInput::class";
             $required = '';
             foreach ($info->required as $name) {
                 $required .= "            " . Php::export($name) . ",\n";
             }
-            $createUpdate = <<<PHP
+            $inputClass = "{$info->entity}CreateInput::class";
+            if ($info->withoutUpdate) {
+                // No update mutation at all: no Update input to use, and the resolver
+                // it would need does not exist either.
+                $uses = "use $entityNamespace\\{$info->entity}CreateInput;\n"
+                    . "use $entityNamespace\\{$info->entity}Type;\n";
+                $skipUpdateFields = true;
+                $createUpdate = <<<PHP
+
+    protected function usesCreateMutation(): bool
+    {
+        return true;
+    }
+
+    protected function requiredFields(): array
+    {
+        return [
+$required        ];
+    }
+
+PHP;
+            } else {
+                $uses = "use $entityNamespace\\{$info->entity}CreateInput;\n"
+                    . "use $entityNamespace\\{$info->entity}Type;\n"
+                    . "use $entityNamespace\\{$info->entity}UpdateInput;\n";
+                $createUpdate = <<<PHP
 
     protected function updateInputClass(): ?string
     {
@@ -35,9 +57,21 @@ $required        ];
     }
 
 PHP;
+            }
         } elseif (!$info->readOnly) {
             $uses = "use $entityNamespace\\{$info->entity}Input;\n" . $uses;
             $inputClass = "{$info->entity}Input::class";
+        }
+
+        if ($info->withoutDelete) {
+            $createUpdate .= <<<PHP
+
+    protected function hasDeleteMutation(): bool
+    {
+        return false;
+    }
+
+PHP;
         }
 
         $expected = '';
@@ -57,7 +91,7 @@ PHP;
             }
             $sample .= "            '$name' => " . Php::export($this->sampleValue($name, $type, 1)) . ",\n";
             // Prefer a field whose second value is visibly different; a Boolean will do if that is all there is.
-            if ($update === '' || ($updateIsBoolean && $type !== 'Boolean')) {
+            if (!$skipUpdateFields && ($update === '' || ($updateIsBoolean && $type !== 'Boolean'))) {
                 $update = "            '$name' => " . Php::export($this->sampleValue($name, $type, 2)) . ",\n";
                 $updateIsBoolean = $type === 'Boolean';
             }
@@ -73,7 +107,9 @@ PHP;
                 . \implode(', ', $missing) . "\n";
         }
         $updateNote = '';
-        if ($update === '') {
+        if ($skipUpdateFields) {
+            $updateNote = "        // This entity has no update mutation (--without-update): nothing to update.\n";
+        } elseif ($update === '') {
             $updateNote = "        // Nothing to update could be chosen: every field is the key or a foreign key.\n"
                 . "        // Until this returns a field, the test reports itself incomplete rather than pass in silence.\n";
         }

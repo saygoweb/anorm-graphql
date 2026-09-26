@@ -20,6 +20,11 @@ class TypeInfo
     public $required = array();
     /** @var bool true to emit the Input(s) only: no mutations, and no Type unless also read-only */
     public $inputOnly = false;
+    /** @var bool true to emit no Update mutation and no Update input; only meaningful
+     *  with $mutations === 'create-update' */
+    public $withoutUpdate = false;
+    /** @var bool true to emit no Delete mutation */
+    public $withoutDelete = false;
 
     /** @return string The prefix of this entity's schema fields, e.g. 'client' */
     public function fieldPrefix()

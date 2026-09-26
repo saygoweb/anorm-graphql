@@ -80,7 +80,14 @@ class TypeMaker
                 $unusable[$class] = "entity '$entity' is not a name PHP 7.4 allows in a namespace; rename the model";
             }
         }
-        foreach (array('only' => $o->only, 'readonly' => $o->readOnly, 'input-only' => $o->inputOnly) as $option => $names) {
+        $nameOptions = array(
+            'only' => $o->only,
+            'readonly' => $o->readOnly,
+            'input-only' => $o->inputOnly,
+            'without-update' => $o->withoutUpdate,
+            'without-delete' => $o->withoutDelete,
+        );
+        foreach ($nameOptions as $option => $names) {
             foreach ($names as $name) {
                 if (!isset($known[$this->entityOf($name)])) {
                     $this->report[] = "Error: --$option names '$name', which is not a model in {$o->modelsDir}";
@@ -88,9 +95,16 @@ class TypeMaker
                 }
             }
         }
+        if ($o->withoutUpdate && $o->mutations !== 'create-update') {
+            $this->report[] = "Error: --without-update names '{$o->withoutUpdate[0]}', which needs --mutations "
+                . "create-update, not '{$o->mutations}'";
+            return 2;
+        }
         $only = \array_map(array($this, 'entityOf'), $o->only);
         $readOnly = \array_map(array($this, 'entityOf'), $o->readOnly);
         $inputOnly = \array_map(array($this, 'entityOf'), $o->inputOnly);
+        $withoutUpdate = \array_map(array($this, 'entityOf'), $o->withoutUpdate);
+        $withoutDelete = \array_map(array($this, 'entityOf'), $o->withoutDelete);
 
         $infos = array();
         foreach ($models as $class => $model) {
@@ -105,6 +119,8 @@ class TypeMaker
             if ($info !== null) {
                 $info->mutations = $o->mutations;
                 $info->inputOnly = \in_array($info->entity, $inputOnly, true);
+                $info->withoutUpdate = \in_array($info->entity, $withoutUpdate, true);
+                $info->withoutDelete = \in_array($info->entity, $withoutDelete, true);
                 $infos[] = $info;
             }
         }
@@ -147,7 +163,13 @@ class TypeMaker
             $this->report[] = "orphaned $path (no model produces it; not deleted)";
         }
         foreach ($infos as $info) {
-            $why = $info->readOnly ? 'is read-only now' : "uses {$info->mutations} mutations now";
+            if ($info->readOnly) {
+                $why = 'is read-only now';
+            } elseif ($info->withoutUpdate) {
+                $why = 'is generated without an update mutation now';
+            } else {
+                $why = "uses {$info->mutations} mutations now";
+            }
             foreach ($this->staleInputs($info) as $path) {
                 $this->report[] = "orphaned $path ('{$info->entity}' $why; not deleted)";
             }
@@ -206,10 +228,14 @@ class TypeMaker
         return true;
     }
 
-    /** @return string[] '' for the upsert Input, or 'Create' and 'Update' */
+    /** @return string[] '' for the upsert Input, or 'Create' and 'Update' ('Create' alone
+     *  when --without-update names this entity) */
     private function inputKinds(TypeInfo $info)
     {
-        return $info->mutations === 'create-update' ? array('Create', 'Update') : array('');
+        if ($info->mutations !== 'create-update') {
+            return array('');
+        }
+        return $info->withoutUpdate ? array('Create') : array('Create', 'Update');
     }
 
     /**

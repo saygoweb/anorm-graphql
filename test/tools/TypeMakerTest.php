@@ -508,4 +508,136 @@ class TypeMakerTest extends TestCase
             $this->assertFileExists($path);
         }
     }
+
+    private function withoutUpdate(array $names): TypeMakerOptions
+    {
+        $o = $this->createUpdate();
+        $o->withoutUpdate = $names;
+        return $o;
+    }
+
+    public function testWithoutUpdateNeedsCreateUpdateMutations(): void
+    {
+        $o = $this->options();
+        $o->withoutUpdate = ['Widget'];
+        $maker = new TypeMaker($o);
+        $this->assertSame(2, $maker->run());
+        $this->assertStringContainsString(
+            "--without-update names 'Widget', which needs --mutations create-update, not 'upsert'",
+            $maker->report[0]
+        );
+        $this->assertDirectoryDoesNotExist("$this->dir/src");
+    }
+
+    public function testWithoutUpdateWritesNoUpdateInputAndNoUpdateMutation(): void
+    {
+        $maker = $this->make($this->withoutUpdate(['Widget']));
+        $this->assertFileExists("$this->dir/src/Type/Widget/WidgetCreateInput.php");
+        $this->assertFileExists("$this->dir/src/Type/Widget/Base/WidgetCreateInputBase.php");
+        $this->assertFileDoesNotExist("$this->dir/src/Type/Widget/WidgetUpdateInput.php");
+        $this->assertFileDoesNotExist("$this->dir/src/Type/Widget/Base/WidgetUpdateInputBase.php");
+        $schema = file_get_contents("$this->dir/src/ApiSchema.php");
+        $this->assertStringContainsString("'widgetCreate'", $schema);
+        $this->assertStringContainsString("'widgetDelete'", $schema);
+        $this->assertStringNotContainsString("'widgetUpdate'", $schema);
+        $this->assertStringNotContainsString('WidgetUpdateInput', $schema);
+        // Owner is untouched: still both create and update.
+        $this->assertStringContainsString("'ownerCreate'", $schema);
+        $this->assertStringContainsString("'ownerUpdate'", $schema);
+        $this->assertStringNotContainsString('orphaned', implode("\n", $maker->report));
+    }
+
+    public function testAnUnknownWithoutUpdateNameIsAnErrorAndWritesNothing(): void
+    {
+        $maker = new TypeMaker($this->withoutUpdate(['Nope']));
+        $this->assertSame(2, $maker->run());
+        $this->assertStringContainsString("--without-update names 'Nope'", $maker->report[0]);
+        $this->assertDirectoryDoesNotExist("$this->dir/src");
+    }
+
+    public function testSwitchingToWithoutUpdateReportsTheOldUpdateInputAndDeletesNothing(): void
+    {
+        $this->make($this->createUpdate());
+        $report = implode("\n", $this->make($this->withoutUpdate(['Widget']))->report);
+        foreach (
+            [
+                "$this->dir/src/Type/Widget/WidgetUpdateInput.php",
+                "$this->dir/src/Type/Widget/Base/WidgetUpdateInputBase.php",
+            ] as $path
+        ) {
+            $this->assertStringContainsString(
+                "orphaned $path ('Widget' is generated without an update mutation now; not deleted)",
+                $report
+            );
+            $this->assertFileExists($path);
+        }
+        $this->assertStringContainsString("orphaned: 'widgetUpdate' is marked as generated but no model produces it", $report);
+        $this->assertStringContainsString("'widgetUpdate'", file_get_contents("$this->dir/src/ApiSchema.php"), 'reported, never deleted');
+    }
+
+    public function testWithoutDeleteWorksUnderUpsert(): void
+    {
+        $o = $this->options();
+        $o->withoutDelete = ['Widget'];
+        $maker = $this->make($o);
+        $schema = file_get_contents("$this->dir/src/ApiSchema.php");
+        $this->assertStringContainsString("'widgetUpsert'", $schema);
+        $this->assertStringNotContainsString("'widgetDelete'", $schema);
+        $this->assertStringContainsString("'ownerDelete'", $schema);
+        $this->assertStringNotContainsString('orphaned', implode("\n", $maker->report));
+    }
+
+    public function testWithoutDeleteWorksUnderCreateUpdate(): void
+    {
+        $o = $this->createUpdate();
+        $o->withoutDelete = ['Widget'];
+        $maker = $this->make($o);
+        $schema = file_get_contents("$this->dir/src/ApiSchema.php");
+        $this->assertStringContainsString("'widgetCreate'", $schema);
+        $this->assertStringContainsString("'widgetUpdate'", $schema);
+        $this->assertStringNotContainsString("'widgetDelete'", $schema);
+    }
+
+    public function testAnUnknownWithoutDeleteNameIsAnErrorAndWritesNothing(): void
+    {
+        $o = $this->options();
+        $o->withoutDelete = ['Nope'];
+        $maker = new TypeMaker($o);
+        $this->assertSame(2, $maker->run());
+        $this->assertStringContainsString("--without-delete names 'Nope'", $maker->report[0]);
+        $this->assertDirectoryDoesNotExist("$this->dir/src");
+    }
+
+    public function testSwitchingToWithoutDeleteReportsTheOldSchemaEntryAndDeletesNothing(): void
+    {
+        $this->make($this->options());
+        $o = $this->options();
+        $o->withoutDelete = ['Widget'];
+        $report = implode("\n", $this->make($o)->report);
+        $this->assertStringContainsString("orphaned: 'widgetDelete' is marked as generated but no model produces it", $report);
+        $this->assertStringContainsString("'widgetDelete'", file_get_contents("$this->dir/src/ApiSchema.php"), 'reported, never deleted');
+    }
+
+    public function testWithoutUpdateAndWithoutDeleteTogetherLeaveOnlyCreate(): void
+    {
+        $o = $this->createUpdate();
+        $o->withoutUpdate = ['Widget'];
+        $o->withoutDelete = ['Widget'];
+        $this->make($o);
+        $schema = file_get_contents("$this->dir/src/ApiSchema.php");
+        $this->assertStringContainsString("'widgetCreate'", $schema);
+        $this->assertStringNotContainsString("'widgetUpdate'", $schema);
+        $this->assertStringNotContainsString("'widgetDelete'", $schema);
+    }
+
+    public function testWithoutUpdateOnAReadOnlyEntityIsHarmless(): void
+    {
+        // A read-only entity already has no update mutation; naming it is redundant,
+        // not a conflict, since --mutations create-update is what makes it legal at all.
+        $o = $this->createUpdate();
+        $o->readOnly = ['Owner'];
+        $o->withoutUpdate = ['Owner'];
+        $maker = $this->make($o);
+        $this->assertStringNotContainsString('Error', implode("\n", $maker->report));
+    }
 }

@@ -242,6 +242,8 @@ Options
   --only             Comma-separated model names to include
   --readonly         Comma-separated models to emit without Input or mutations
   --input-only       Comma-separated models to emit as Input only
+  --without-update   Comma-separated models with no Update (create-update only)
+  --without-delete   Comma-separated models with no Delete mutation
 ```
 
 `--type-base` names a class of your own for every generated `<Entity>TypeBase` to
@@ -268,6 +270,13 @@ entries: for rows that are only ever written as part of another entity's input, 
 as an order's lines. Add `--readonly` for the same names to have their read-only Type
 and `<entity>List` too.
 
+`--without-update <names>` and `--without-delete <names>` drop the `<entity>Update` or
+`<entity>Delete` mutation for those entities, with nothing else changed.
+`--without-update` also drops the Update input files, and needs
+`--mutations create-update` (it is exit 2 under `upsert`, which has no separate Update
+to drop); `--without-delete` works under either. See `docs/customising.md`,
+"No update, or no delete: `--without-update` and `--without-delete`".
+
 An unknown argument is exit 2, and its default is never used silently:
 
 ```
@@ -277,8 +286,8 @@ Error: Unexpected argument '--outut', try '--help'
 ```
 (exit code 2)
 
-A name given to `--only`, `--readonly` or `--input-only` that matches no model is
-the same kind of error:
+A name given to `--only`, `--readonly`, `--input-only`, `--without-update` or
+`--without-delete` that matches no model is the same kind of error:
 
 ```
 Error: --only names 'Nope', which is not a model in test/Fixtures/Model
