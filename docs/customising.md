@@ -412,6 +412,28 @@ deleted, exactly like switching `--mutations` (above); the `<entity>Update` sche
 entry it leaves behind is reported the same way `ApiSchema.php` always reports an
 entry no model produces any more.
 
+**`--without-delete` versus overriding `resolveDelete()`.** They answer different
+questions. `--without-delete` says the schema should have no `<entity>Delete`
+mutation at all — a client cannot even attempt one; use it when the document has no
+delete concept of its own, as `Delivery`/`Invoice` do for update. Overriding
+`resolveDelete()` keeps `<entity>Delete` in the schema but changes what deleting
+*means* — FrontAccounting's documents are never removed, they are voided:
+
+```php
+protected function resolveDelete($root, $args, Container $context): array
+{
+    // void_transaction(...) here, in place of the inherited $model->delete();
+    // the mutation stays named "Delete" and still returns the affected rows.
+    return parent::resolveDelete($root, $args, $context);
+}
+```
+
+Combine them when a document can never be removed *or* voided through the API at
+all (`--without-delete`) versus can only ever be voided, never truly deleted
+(override `resolveDelete()`, keep the mutation). Release 3's `Delivery` and
+`Invoice` do the latter: no `--without-delete`, and `resolveDelete()` overridden to
+void.
+
 ## Dates
 
 A model property declared `\DateTimeInterface`, `\DateTimeImmutable`, or an `@var`
