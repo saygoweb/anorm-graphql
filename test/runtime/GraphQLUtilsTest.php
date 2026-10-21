@@ -18,6 +18,20 @@ class GraphQLUtilsTest extends TestCase
         $this->assertSame([$type, 'resolveList'], $field['resolve']);
     }
 
+    public function testCreateCountFieldIsANonNullIntResolvedByTheType(): void
+    {
+        $type = new ResolvingType();
+        $field = GraphQLUtils::createCountField('thingCount', $type)->build();
+        $this->assertSame('thingCount', $field['name']);
+        $this->assertSame('Int!', (string) $field['type']);
+        $this->assertSame([$type, 'resolveCount'], $field['resolve']);
+        $this->assertSame(
+            [$type, 'resolveList'],
+            GraphQLUtils::createCountField('thingCount', $type, 'resolveList')->build()['resolve'],
+            'another method can count'
+        );
+    }
+
     public function testNullableVariants(): void
     {
         $type = new ResolvingType();

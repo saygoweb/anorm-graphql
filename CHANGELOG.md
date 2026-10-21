@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.2
+
+Backward compatible: nothing that worked in 0.3.1 changes.
+
+- `ModelType::resolveCount()`: how many rows `resolveList()` would return for a
+  `query` with no limit, counted in SQL (`SELECT COUNT(*)`) over the same selector,
+  `scope()` and `authorize(VERB_LIST, ...)`. The query's `limit`, `skip` and `sort`
+  are ignored, so a list's query can be passed as it is; a bad selector is the same
+  client-safe `UserError` as for the list. For paging: a client can tell the last
+  page, and say "showing 50 of 312".
+- `GraphQLUtils::createCountField($name, $type, $method = 'resolveCount')`: an
+  `Int!` field resolved by that method, for `<entity>Count` beside `<entity>List`.
+  The generator does not write count entries; add them by hand (README, "Counting
+  for paging").
+
 ## 0.3.1
 
 Backward compatible: every `sort` item that worked in 0.3.0 sorts as it did.

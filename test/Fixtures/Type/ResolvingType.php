@@ -17,4 +17,9 @@ class ResolvingType extends ObjectType
     {
         return [];
     }
+
+    public function resolveCount(): int
+    {
+        return 0;
+    }
 }
