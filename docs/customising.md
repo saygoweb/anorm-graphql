@@ -67,8 +67,8 @@ protected function authorize(string $verb, ?Model $model, Container $context): v
 
 Verbs are the `ModelType::VERB_*` constants: `VERB_LIST`, `VERB_CREATE`,
 `VERB_EDIT`, `VERB_DELETE`. `$model` is null for `list` and `create`. Throw to
-refuse; `resolveList`, `resolveUpsert` and `resolveDelete` all call `authorize`
-before doing anything else.
+refuse; `resolveList`, `resolveCount` (as `list`), `resolveUpsert` and
+`resolveDelete` all call `authorize` before doing anything else.
 
 ```php
 <?php
@@ -251,7 +251,7 @@ protected function scope(): array
 `scope()` returns fixed `property => value` pairs that every row of the Type has.
 It exists for a table that holds several kinds of row told apart by a discriminator
 column — FrontAccounting's `sales_orders.trans_type` or `debtor_trans.type` are the
-motivating case. The scope is ANDed into every list and every read by key, stamped
+motivating case. The scope is ANDed into every list, count and read by key, stamped
 onto every write, and an input that tries to set a scope property to a different
 value is refused as a client-safe error. Within the scope the model's key must
 still be unique.

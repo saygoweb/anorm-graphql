@@ -30,6 +30,16 @@ class GraphQLUtils
             ->setResolver(GraphQLUtils::methodResolver($type, $method, $name));
     }
 
+    /**
+     * An `Int!` field resolved by $type's $method, ModelType::resolveCount() by default:
+     * `<entity>Count` beside `<entity>List`, given the same `query` argument.
+     */
+    public static function createCountField(string $name, Type $type, string $method = 'resolveCount'): FieldBuilder
+    {
+        return FieldBuilder::create($name, Type::nonNull(Type::int()))
+            ->setResolver(GraphQLUtils::methodResolver($type, $method, $name));
+    }
+
     public static function createField(string $name, Type $type, string $method, $isNullable = false)
     {
         if ($isNullable) {

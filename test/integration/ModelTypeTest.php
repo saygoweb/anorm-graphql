@@ -616,4 +616,89 @@ class ModelTypeTest extends TestCase
         $rows = $type->resolveCreate(null, ['input' => [['name' => 'a']]], $this->context);
         $this->assertSame('a', $rows[0]['name']);
     }
+
+    /**
+     * @param array<string, mixed>|null $query
+     */
+    private function counted(?array $query): int
+    {
+        return $this->type->resolveCount(null, $query === null ? [] : ['query' => $query], $this->context);
+    }
+
+    public function testCountIsTheLengthOfTheUnlimitedList(): void
+    {
+        $this->assertSame(0, $this->counted(null), 'an empty table counts 0');
+        $this->upsert([
+            ['name' => 'a', 'quantity' => 1],
+            ['name' => 'b', 'quantity' => 2],
+            ['name' => 'c', 'quantity' => 3],
+        ]);
+        $this->assertSame(3, $this->counted(null));
+        $this->assertSame(3, $this->counted(['selector' => '']));
+        $selector = '{"quantity": {"$gt": 1}}';
+        $this->assertSame(count($this->names(['selector' => $selector])), $this->counted(['selector' => $selector]));
+        $this->assertSame(2, $this->counted(['selector' => $selector]));
+        $this->assertSame(0, $this->counted(['selector' => '{"name": "nobody"}']));
+    }
+
+    public function testCountIgnoresLimitSkipAndSortSoAListsQueryCanBeReused(): void
+    {
+        $this->upsert([['name' => 'a'], ['name' => 'b'], ['name' => 'c']]);
+        $page = ['sort' => ['-name'], 'limit' => 1, 'skip' => 1];
+        $this->assertSame(['b'], $this->names($page));
+        $this->assertSame(3, $this->counted($page));
+        $this->assertSame(3, $this->counted(['skip' => 5]));
+        $this->assertSame(3, $this->counted(['sort' => ['noSuchField']]), 'a count reads no sort, good or bad');
+    }
+
+    public function testCountIsAuthorisedAsTheList(): void
+    {
+        $this->counted(null);
+        $this->assertSame([['list', null]], $this->type->authorized);
+
+        $this->type->refuse = 'list';
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('refused list');
+        $this->counted(null);
+    }
+
+    public function testCountAppliesTheScope(): void
+    {
+        $invoices = new ScopedDocumentType('InvoiceType', 10);
+        $quotes = new ScopedDocumentType('QuoteType', 32);
+        $invoices->resolveCreate(null, ['input' => [['title' => 'inv'], ['title' => 'inv2']]], $this->context);
+        $quotes->resolveCreate(null, ['input' => [['title' => 'quo']]], $this->context);
+
+        $this->assertSame(2, $invoices->resolveCount(null, [], $this->context));
+        $this->assertSame(1, $quotes->resolveCount(null, [], $this->context));
+        $query = ['query' => ['selector' => '{"title": {"$in": ["inv", "quo"]}}']];
+        $this->assertSame(1, $quotes->resolveCount(null, $query, $this->context), 'the scope is ANDed with the selector');
+        $this->assertSame(1, $invoices->resolveCount(null, $query, $this->context));
+    }
+
+    /**
+     * @dataProvider malformedSelectors
+     */
+    public function testABadSelectorIsAClientSafeErrorForACountAsForAList(string $selector): void
+    {
+        $this->expectException(UserError::class);
+        $this->counted(['selector' => $selector]);
+    }
+
+    public function testACountRefusesAFieldNameThatIsNotAProperty(): void
+    {
+        $this->upsert([['name' => 'a']]);
+        foreach ($this->hostileQueries() as $case => [$query]) {
+            if (!isset($query['selector'])) {
+                continue;
+            }
+            try {
+                $this->counted(['selector' => $query['selector']]);
+                $this->fail("expected the unknown field to be refused: $case");
+            } catch (UserError $e) {
+                $this->assertStringContainsString('unknown field', $e->getMessage(), $case);
+            }
+        }
+        $this->assertSame(1, $this->rowCount());
+    }
 }

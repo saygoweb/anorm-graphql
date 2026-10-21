@@ -102,6 +102,34 @@ abstract class ModelType extends ObjectType
         return $rows;
     }
 
+    /**
+     * How many rows resolveList() would return for this query with no limit: the same
+     * selector, scope and authorisation (VERB_LIST), counted in SQL. The query's
+     * limit, skip and sort are ignored, so a client can pass a list's query as it is
+     * to learn the total behind a page.
+     *
+     * A project that replaces resolveList() wholesale, narrowing it further, must
+     * replace this the same way, or the two disagree.
+     */
+    public function resolveCount($root, $args, Container $context): int
+    {
+        $this->authorize(self::VERB_LIST, null, $context);
+
+        $query = isset($args['query']) && is_array($args['query']) ? $args['query'] : [];
+        $selectorOnly = isset($query['selector']) && $query['selector'] !== ''
+            ? [MangoQuery::MANGO_SELECTOR => $query['selector']]
+            : null;
+        $probe = $this->newModel($context);
+        $mapper = $probe->mapper();
+        $condition = $this->scopedCondition($mapper, $this->mangoQuery($selectorOnly, $mapper->map), []);
+        $sql = 'SELECT COUNT(*) FROM `' . $mapper->table . '`';
+        if (!$condition->isEmpty()) {
+            $sql .= ' WHERE ' . $condition->getSql();
+        }
+
+        return (int) $mapper->query($sql, $condition->getBindings(), $probe)->fetchColumn();
+    }
+
     public function resolveUpsert($root, $args, Container $context): array
     {
         return $this->write($args['input'], $context, 'upsert');
@@ -201,26 +229,7 @@ abstract class ModelType extends ObjectType
         $mapper = $probe->mapper();
         $builder = DataMapper::find($this->modelClass(), $probe->getPdo());
         $mango = $this->mangoQuery($query, $mapper->map);
-
-        $condition = SqlCondition::empty();
-        if ($mango !== null && $mango->hasConditions()) {
-            try {
-                $condition = (new MangoQueryParser($mapper))->parseSelector($mango->selector);
-            } catch (\InvalidArgumentException $e) {
-                throw new UserError("Argument 'query.selector' is not valid: " . $e->getMessage());
-            } catch (\TypeError $e) {
-                throw new UserError("Argument 'query.selector' is not valid");
-            }
-        }
-        $n = 0;
-        foreach (array_merge($this->scope(), $equals) as $property => $value) {
-            if (!isset($mapper->map[$property])) {
-                throw new \LogicException(get_class($this) . ": '$property' is not a property of " . $this->modelClass());
-            }
-            $name = ':agq_' . (++$n);
-            $fixed = new SqlCondition('`' . $mapper->map[$property] . '` = ' . $name, [$name => $value]);
-            $condition = $condition->isEmpty() ? $fixed : $condition->combine($fixed, 'AND');
-        }
+        $condition = $this->scopedCondition($mapper, $mango, $equals);
         if (!$condition->isEmpty()) {
             $builder->where($condition);
         }
@@ -240,6 +249,37 @@ abstract class ModelType extends ObjectType
             }
         }
         return $builder;
+    }
+
+    /**
+     * The WHERE of scopedQuery(): the selector, ANDed with the scope and $equals.
+     * resolveCount() counts over exactly this, so a count and a list cannot disagree.
+     *
+     * @param MangoQuery|null $mango The client's query, already checked by mangoQuery()
+     * @param array<string, mixed> $equals Further property => value conditions, bound
+     */
+    private function scopedCondition(DataMapper $mapper, ?MangoQuery $mango, array $equals): SqlCondition
+    {
+        $condition = SqlCondition::empty();
+        if ($mango !== null && $mango->hasConditions()) {
+            try {
+                $condition = (new MangoQueryParser($mapper))->parseSelector($mango->selector);
+            } catch (\InvalidArgumentException $e) {
+                throw new UserError("Argument 'query.selector' is not valid: " . $e->getMessage());
+            } catch (\TypeError $e) {
+                throw new UserError("Argument 'query.selector' is not valid");
+            }
+        }
+        $n = 0;
+        foreach (array_merge($this->scope(), $equals) as $property => $value) {
+            if (!isset($mapper->map[$property])) {
+                throw new \LogicException(get_class($this) . ": '$property' is not a property of " . $this->modelClass());
+            }
+            $name = ':agq_' . (++$n);
+            $fixed = new SqlCondition('`' . $mapper->map[$property] . '` = ' . $name, [$name => $value]);
+            $condition = $condition->isEmpty() ? $fixed : $condition->combine($fixed, 'AND');
+        }
+        return $condition;
     }
 
     /**

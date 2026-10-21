@@ -561,6 +561,27 @@ Two rules, enforced by
 Invalid selector JSON, an invalid sort, or any other malformed `query` argument is
 a client-safe `GraphQL\Error\UserError`, never an internal server error.
 
+## Counting for paging
+
+A list is a plain array, so a client paging with `limit`/`skip` cannot tell a full
+last page from one with more after it. `ModelType::resolveCount()` answers that: the
+number of rows `resolveList()` would return for the same `query` with no limit. It
+uses the same selector, `scope()` and `authorize(VERB_LIST, ...)` as the list, and
+ignores the query's `limit`, `skip` and `sort`, so the list's query can be passed
+as it is. A bad selector is the same `UserError` the list gives.
+
+The generator writes no count entries. Add one by hand beside a list, with
+`GraphQLUtils::createCountField()` (an `Int!` field resolved by `resolveCount`):
+
+```php
+GraphQLUtils::createCountField('widgetCount', $this->type(WidgetType::class))
+    ->addArgument('query', $this->type(MangoInput::class))
+    ->build(),
+```
+
+A Type that replaces `resolveList()` wholesale, narrowing it beyond `scope()`, must
+replace `resolveCount()` the same way, or the two disagree.
+
 ## Limitations
 
 - **No relationship fields.** A model's `belongsTo` / `hasMany` relationships are
