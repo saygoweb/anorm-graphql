@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.1
+
+Backward compatible: every `sort` item that worked in 0.3.0 sorts as it did.
+
+- A `sort` item can carry a direction: `"-field"` or `"field desc"` sorts
+  descending, `"field"` or `"field asc"` ascending; the direction is
+  case-insensitive. Until now every string item sorted ascending, so a list could
+  not be read newest first.
+- A bad `sort` item (an unknown field, an unknown direction, `"-field desc"`, more
+  than two words) is a client-safe `UserError` whose message starts
+  `Argument 'query.sort' item '<item>'`, says what is wrong with it and lists the
+  model's sortable fields.
+
 ## 0.3.0
 
 For the first consumer's third release (Release 3, billing). Default output is

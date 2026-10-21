@@ -517,7 +517,21 @@ input MangoInput {
 ```
 
 `selector` is a JSON string (see [cloudant/mango](https://github.com/cloudant/mango)),
-decoded and passed to Anorm's `MangoQueryParser`. Two rules, enforced by
+decoded and passed to Anorm's `MangoQueryParser`.
+
+Each `sort` item is a field, optionally with a direction (case-insensitive):
+
+| Item | Order |
+| --- | --- |
+| `"name"`, `"name asc"` | ascending |
+| `"-name"`, `"name desc"` | descending |
+
+Items apply in order, so `sort: ["-date", "id"]` is newest first, ties by id. A
+malformed item is refused with a message that names it and lists the sortable
+fields, for example
+`Argument 'query.sort' item 'name sideways' has an unknown direction 'sideways'; use 'asc' or 'desc'. The sortable fields are: id, name, quantity`.
+
+Two rules, enforced by
 `Anorm\GraphQL\ModelType` before the query ever reaches the parser
 (see `src/ModelType.php`):
 
@@ -525,7 +539,9 @@ decoded and passed to Anorm's `MangoQueryParser`. Two rules, enforced by
    the model.** This is a security boundary, not a nicety: Anorm's Mango parser
    puts a name it does not recognise into the SQL between backticks, unescaped, and
    these names arrive from the API's clients. An unknown name is refused:
-   `Argument 'query' names an unknown field 'nope'`.
+   `Argument 'query' names an unknown field 'nope'` in a selector, and
+   `Argument 'query.sort' item '-nope' names an unknown field 'nope'. The sortable fields are: ...`
+   in a sort.
 2. **A field whose name Anorm's Mango parser reads as an operator cannot be used in
    a selector or a sort.** The parser reads these words as operators regardless of
    context:
