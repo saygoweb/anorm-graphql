@@ -317,13 +317,21 @@ abstract class ModelType extends ObjectType
             $mango[MangoQuery::MANGO_SELECTOR] = json_decode($query['selector'], true);
         }
         if (isset($query[MangoQuery::MANGO_SORT])) {
-            foreach ($query[MangoQuery::MANGO_SORT] as $item) {
-                foreach (is_array($item) ? array_keys($item) : [$item] as $name) {
-                    $this->assertFieldName((string) $name, $map);
+            $sort = [];
+            foreach ((array) $query[MangoQuery::MANGO_SORT] as $item) {
+                if (!is_array($item)) {
+                    $sort[] = $this->sortItem(is_string($item) ? $item : '', $map);
+                    continue;
+                }
+                // Anorm's own {"field": "direction"} form, from a PHP caller: GraphQL's
+                // [String] cannot carry it.
+                foreach ($item as $field => $direction) {
+                    $sort[] = $this->sortItem($field . ' ' . (is_string($direction) ? $direction : ''), $map);
                 }
             }
+            $mango[MangoQuery::MANGO_SORT] = $sort;
         }
-        foreach ([MangoQuery::MANGO_LIMIT, MangoQuery::MANGO_SKIP, MangoQuery::MANGO_SORT] as $name) {
+        foreach ([MangoQuery::MANGO_LIMIT, MangoQuery::MANGO_SKIP] as $name) {
             if (isset($query[$name])) {
                 $mango[$name] = $query[$name];
             }
@@ -333,6 +341,71 @@ abstract class ModelType extends ObjectType
         } catch (\InvalidArgumentException $e) {
             throw new UserError("Argument 'query' is not valid: " . $e->getMessage());
         }
+    }
+
+    /**
+     * One sort item as Anorm's parser takes it, `[property => 'ASC'|'DESC']`.
+     *
+     * A client writes `field` or `field asc` (ascending), or `-field` or `field desc`
+     * (descending); the direction is case-insensitive. The field must be a property of
+     * the model, for the same reason as in a selector: see assertKnownFields().
+     *
+     * @param array<string, string> $map The model's property => column map
+     * @return array<string, string>
+     */
+    private function sortItem(string $item, array $map): array
+    {
+        $words = preg_split('/\s+/', trim($item), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        $first = $words[0] ?? '';
+        $descending = $first !== '' && $first[0] === '-';
+        $field = $descending ? substr($first, 1) : $first;
+        $shown = "Argument 'query.sort' item '" . substr($item, 0, 40) . "'";
+        $shape = "; write 'field', '-field', 'field asc' or 'field desc'";
+
+        if ($field === '') {
+            throw new UserError($shown . ' names no field' . $shape . $this->sortableFields($map));
+        }
+        if (!isset($map[$field])) {
+            throw new UserError(
+                $shown . " names an unknown field '" . substr($field, 0, 40) . "'" . $this->sortableFields($map)
+            );
+        }
+        $this->assertFieldName($field, $map);
+        if (count($words) > 2) {
+            throw new UserError($shown . ' is not a sort item' . $shape . $this->sortableFields($map));
+        }
+        if (count($words) === 2) {
+            if ($descending) {
+                throw new UserError(
+                    $shown . " gives a direction twice: use '-$field' or '$field desc', not both"
+                    . $this->sortableFields($map)
+                );
+            }
+            $direction = strtolower($words[1]);
+            if ($direction !== 'asc' && $direction !== 'desc') {
+                throw new UserError(
+                    $shown . " has an unknown direction '" . substr($words[1], 0, 40) . "'; use 'asc' or 'desc'"
+                    . $this->sortableFields($map)
+                );
+            }
+            $descending = $direction === 'desc';
+        }
+
+        return [$field => $descending ? 'DESC' : 'ASC'];
+    }
+
+    /**
+     * @param array<string, string> $map The model's property => column map
+     * @return string The fields a client can sort on, for an error message
+     */
+    private function sortableFields(array $map): string
+    {
+        $names = array_filter(array_map('strval', array_keys($map)), function (string $name): bool {
+            return !in_array(strtolower($name), self::OPERATOR_WORDS, true);
+        });
+        sort($names, SORT_STRING | SORT_FLAG_CASE);
+
+        return '. The sortable fields are: ' . implode(', ', $names);
     }
 
     /**

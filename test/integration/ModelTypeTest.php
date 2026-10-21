@@ -134,6 +134,57 @@ class ModelTypeTest extends TestCase
         $this->assertCount(3, $this->type->resolveList(null, ['query' => null], $this->context));
     }
 
+    public function testASortItemCarriesItsDirection(): void
+    {
+        $this->upsert([
+            ['name' => 'a', 'quantity' => 2],
+            ['name' => 'b', 'quantity' => 1],
+            ['name' => 'c', 'quantity' => 2],
+        ]);
+        $this->assertSame(['c', 'b', 'a'], $this->names(['sort' => ['-name']]));
+        $this->assertSame(['c', 'b', 'a'], $this->names(['sort' => ['name desc']]));
+        $this->assertSame(['c', 'b', 'a'], $this->names(['sort' => ['name DESC']]));
+        $this->assertSame(['a', 'b', 'c'], $this->names(['sort' => ['name asc']]));
+        $this->assertSame(['a', 'b', 'c'], $this->names(['sort' => ['name']]));
+        $this->assertSame(['c', 'b'], $this->names(['sort' => ['-name'], 'limit' => 2]), 'the last N');
+        $this->assertSame(['c', 'a', 'b'], $this->names(['sort' => ['quantity Desc', 'name desc']]));
+        $this->assertSame(['a', 'c', 'b'], $this->names(['sort' => ['-quantity', 'name']]));
+        $this->assertSame(['c', 'b', 'a'], $this->names(['sort' => [['name' => 'desc']]]), "Anorm's own form, from PHP");
+    }
+
+    /**
+     * @dataProvider badSortItems
+     */
+    public function testABadSortItemIsAClientSafeErrorNamingItAndTheSortableFields(string $item, string $says): void
+    {
+        $this->upsert([['name' => 'a']]);
+        try {
+            $this->names(['sort' => [$item]]);
+            $this->fail("expected sort item '$item' to be refused");
+        } catch (UserError $e) {
+            $this->assertTrue($e->isClientSafe());
+            $this->assertStringContainsString("Argument 'query.sort'", $e->getMessage());
+            $this->assertStringContainsString("'$item'", $e->getMessage());
+            $this->assertStringContainsString($says, $e->getMessage());
+            $this->assertStringContainsString('active, id, name, notes, ownerId, price, quantity', $e->getMessage());
+        }
+    }
+
+    /** @return array<string, array<int, string>> */
+    public function badSortItems(): array
+    {
+        return [
+            'an unknown field' => ['noSuchField', "unknown field 'noSuchField'"],
+            'an unknown field, descending' => ['-noSuchField', "unknown field 'noSuchField'"],
+            'a column name, not a property' => ['owner_id desc', "unknown field 'owner_id'"],
+            'a bad direction' => ['name sideways', "direction 'sideways'"],
+            'a minus and a direction' => ['-name desc', 'not both'],
+            'too many words' => ['name desc please', "'field', '-field', 'field asc' or 'field desc'"],
+            'a bare minus' => ['-', "'field', '-field', 'field asc' or 'field desc'"],
+            'empty' => ['', "'field', '-field', 'field asc' or 'field desc'"],
+        ];
+    }
+
     public function testASelectorThatIsNotJsonIsAClientSafeError(): void
     {
         $this->expectException(UserError::class);
